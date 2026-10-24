@@ -7,6 +7,9 @@ English text appears on top of the Japanese speech bubbles.
 your computer finds the text, reads it and translates it, and sends the English back. Each page is
 translated only once and then saved.
 
+<p align="center"><img src="docs/preview.webp" width="480" alt="A Japanese manga page: the text is found, read, and English appears on top of the speech bubbles"></p>
+<p align="center"><sub>A made-up test page, translated by the small <code>manga-translate</code> model.</sub></p>
+
 **Free and private.** Everything runs on your own computer: no account, no subscription, no AI
 service on the internet, and your manga never leaves your home network. The internet is only used
 once, to download the programs and models.
@@ -219,6 +222,9 @@ If **Test connection** says it can't reach one of them, check the firewall too (
 1. Open a Japanese chapter.
 2. Tap the middle of the page, then the **☰** button (bottom corner) to open the reading options.
 3. Switch **Translation** to **On**.
+
+<p align="center"><img src="docs/reader.webp" width="360" alt="In the MangaVibe reader: tap the middle of the page, tap the reading options button, switch Translation on, and English appears over the speech bubbles"></p>
+<p align="center"><sub>A made-up test page in MangaVibe on a phone, translated by <code>gemma4</code>.</sub></p>
 
 The English appears after a second or two ("Translating…" shows at the top meanwhile). The next 8
 pages are translated in the background, so turning pages doesn't wait. Translation stays on for this
