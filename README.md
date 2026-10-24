@@ -3,13 +3,13 @@
 Read Japanese manga in English. While you read in [MangaVibe](https://github.com/ivokolarov0/manga-vibe),
 English text appears on top of the Japanese speech bubbles.
 
-**How it works, in one sentence:** MangaVibe (on your NAS) sends each page to your **PC**, your PC
+**How it works, in one sentence:** MangaVibe (wherever it runs) sends each page to your **PC**, your PC
 finds the text, reads it and translates it, and sends the English back. Each page is translated only
 once and then saved.
 
 So you need:
 
-- **MangaVibe 1.7.0 or newer** (on your NAS, or anywhere)
+- **MangaVibe 1.7.0 or newer**, on any machine: a NAS, a home server, or the same PC
 - **A Windows PC with a graphics card** (NVIDIA, AMD or Intel, 4 GB or more), on the same home network.
   It must be switched on while you read new chapters.
 
@@ -47,9 +47,10 @@ You will install two programs and download one file.
      ```
 3. Wait until it says **success**. Remember which one you picked: `gemma4` or `manga-translate`.
 
-### Step 4: Let your NAS talk to Ollama
+### Step 4: Let MangaVibe talk to Ollama
 
-Ollama only talks to programs on the PC itself, until you change one setting:
+Ollama only talks to programs on the PC itself, until you change one setting (you can skip this step
+if MangaVibe runs on this same PC):
 
 1. Press the **Windows key**, type `environment`, click **Edit environment variables for your account**.
 2. Under the top list, click **New…**
@@ -97,8 +98,9 @@ Open your router's settings page, find the list of devices, and choose **reserve
 
 ### Step 8: Add the plugin
 
-1. Copy `manga_translate.py` from `C:\MangaTranslate` into MangaVibe's **plugins** folder.
-   On a Synology NAS with the usual setup that's `docker/mangavibe/plugins` (use File Station).
+1. Copy `manga_translate.py` from `C:\MangaTranslate` into MangaVibe's **plugins** folder. It's
+   inside MangaVibe's data folder: if you run MangaVibe in Docker, that's the folder you mounted as
+   `/data`, so the file goes into `<that folder>/plugins`.
 2. In MangaVibe, open **Settings → Plugins** and click **Reload plugins**.
    **Manga Translate** appears in the list.
 
