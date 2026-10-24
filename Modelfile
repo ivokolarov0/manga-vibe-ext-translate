@@ -1,0 +1,18 @@
+# Hy-MT2 1.8B for MangaVibe, with the chat template fixed.
+# The template inside Tencent's GGUF file is broken in Ollama: the text you send never reaches the
+# model. This file adds the right one (from Tencent's chat_template.jinja).
+#
+#   ollama create manga-translate -f Modelfile
+#
+# Then use the model name "manga-translate" in MangaVibe.
+FROM hf.co/tencent/Hy-MT2-1.8B-GGUF:Q4_K_M
+
+TEMPLATE """<｜hy_begin▁of▁sentence｜>{{ if .System }}{{ .System }}<｜hy_place▁holder▁no▁3｜>{{ end }}{{ range .Messages }}{{ if eq .Role "user" }}<｜hy_User｜>{{ .Content }}{{ else if eq .Role "assistant" }}<｜hy_Assistant｜>{{ .Content }}<｜hy_place▁holder▁no▁2｜>{{ end }}{{ end }}<｜hy_Assistant｜>"""
+
+# Tencent's recommended settings for the 1.8B model
+PARAMETER temperature 0.7
+PARAMETER top_p 0.6
+PARAMETER top_k 20
+PARAMETER repeat_penalty 1.05
+PARAMETER num_ctx 8192
+PARAMETER stop "<｜hy_place▁holder▁no▁2｜>"
