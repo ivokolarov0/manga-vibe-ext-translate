@@ -7,6 +7,18 @@ English text appears on top of the Japanese speech bubbles.
 your computer finds the text, reads it and translates it, and sends the English back. Each page is
 translated only once and then saved.
 
+**Free and private.** Everything runs on your own computer: no account, no subscription, no AI
+service on the internet, and your manga never leaves your home network. The internet is only used
+once, to download the programs and models.
+
+**What you install:** two programs, which together use three small AI models. That's normal: each
+model does one job.
+
+| Program | Its models | Job |
+|---|---|---|
+| **Ollama** | one translation model, which you pick in step 3 | turns Japanese into English |
+| **The text reader** (in this folder) | two tiny models it downloads by itself | finds the speech bubbles, reads the Japanese |
+
 So you need:
 
 - **MangaVibe 1.7.0 or newer**, on any machine: a NAS, a home server, or the same computer
@@ -79,7 +91,8 @@ You'll use this folder in the next steps.
 ### Step 4: Let MangaVibe talk to Ollama
 
 Ollama only talks to programs on the computer itself, until you change one setting. (You can skip
-this step if MangaVibe runs on this same computer.)
+this step only if MangaVibe runs on this same computer **without** Docker; see
+[MangaVibe on the same computer](#mangavibe-on-the-same-computer).)
 
 - **Windows:**
   1. Press the **Windows key**, type `environment`, click **Edit environment variables for your account**.
@@ -181,6 +194,24 @@ Leave the other boxes as they are. Click **Save**, then click **Test connection*
 It should say *Vision server OK · LLM server OK, model found*. If not, see
 [Something doesn't work](#something-doesnt-work).
 
+### MangaVibe on the same computer
+
+If MangaVibe runs on the same computer as Ollama and the text reader, the addresses depend on how
+you run MangaVibe:
+
+- **MangaVibe in Docker** (the usual way): inside Docker, `localhost` means MangaVibe's own container,
+  not your computer, so don't use it.
+  - **Windows or Mac with Docker Desktop:** use `http://host.docker.internal:7865` and
+    `http://host.docker.internal:11434`. This name always points at your computer, so step 7 isn't
+    needed.
+  - **Linux:** use the address the text reader prints (step 6), e.g. `http://192.168.1.50:7865` and
+    `http://192.168.1.50:11434`, and do step 7.
+  - Either way, **do step 4**: Docker counts as "another computer" for Ollama.
+- **MangaVibe without Docker** (for example started with `python dev.py`): use
+  `http://localhost:7865` and `http://localhost:11434`. Steps 4, 6.4 (firewall) and 7 aren't needed.
+
+If **Test connection** says it can't reach one of them, check the firewall too (step 6.4).
+
 ---
 
 ## Part 3: reading
@@ -223,6 +254,7 @@ the menu bar, and after a restart of the Mac redo step 4).
 |---|---|
 | *Can't reach the vision server* | Is the window from step 6 still open? On your phone, open `http://<computer address>:7865/health`. If nothing loads: allow it through the firewall (step 6.4), or the computer's address changed (step 7). |
 | *Can't reach the LLM server* | Step 4 wasn't done, or Ollama wasn't restarted after it. On a Mac, step 4 has to be redone after every restart. |
+| Everything on one computer and it can't reach either server | Don't use `localhost` when MangaVibe runs in Docker: see [MangaVibe on the same computer](#mangavibe-on-the-same-computer). |
 | *has no model called …* | The **Model** box must match step 3 exactly. In a command window, `ollama list` shows the names. |
 | *set the server addresses in Settings* | Step 9. |
 | No **Translation** switch in the reader | Step 8: is the plugin in the list, and switched on? MangaVibe must be 1.7.0 or newer. |
