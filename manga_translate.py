@@ -24,7 +24,7 @@ import httpx
 from app.models import Book
 from app.plugins import Action, Box, Overlay, Plugin, SettingDef
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 DATA_VERSION = 1          # the format of what is saved per page
 SEND_WIDTH = 1600         # pages are shrunk to this width before they go to the PC
 OFFLINE_RETRY = 15        # seconds between tries while the PC can't be reached
