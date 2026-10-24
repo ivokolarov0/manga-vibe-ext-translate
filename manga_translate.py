@@ -57,6 +57,14 @@ class MangaTranslate(Plugin):
                    help="Pages after the one you're reading that are translated in advance"),
         SettingDef("glossary", "Names and terms",
                    help="Fixed translations, separated by ;  e.g.  先輩=senpai; 春香=Haruka"),
+        SettingDef("box_bg", "Box background", default="100",
+                   options=[("100", "Solid white"), ("75", "A little see-through"),
+                            ("50", "Half see-through"), ("25", "Mostly see-through"),
+                            ("0", "None (only the text)")],
+                   help="How much of the page shows through the English boxes"),
+        SettingDef("outline", "White outline around the text", default="off",
+                   options=[("off", "Off"), ("on", "On")],
+                   help="Keeps the English readable over the art when the box is see-through"),
     ]
     global_actions = [Action("test", "Test connection"), Action("stop", "Stop the queue")]
     actions = [Action("series", "Translate the whole series"),
@@ -66,6 +74,14 @@ class MangaTranslate(Plugin):
                     Action("again", "Translate this chapter again")]
     css = """
 .ov-box.ov-manga-translate { border-radius: 14px; box-shadow: 0 0 0 2px #fff; }
+.ov-box.mt-bg-75 { background: rgba(255, 255, 255, .75); box-shadow: 0 0 0 2px rgba(255, 255, 255, .75); }
+.ov-box.mt-bg-50 { background: rgba(255, 255, 255, .5); box-shadow: 0 0 0 2px rgba(255, 255, 255, .5); }
+.ov-box.mt-bg-25 { background: rgba(255, 255, 255, .25); box-shadow: 0 0 0 2px rgba(255, 255, 255, .25); }
+.ov-box.mt-bg-0 { background: transparent; box-shadow: none; }
+.ov-box.mt-outline span {
+  -webkit-text-stroke: .16em #fff; paint-order: stroke fill;  /* stroke drawn under the letters */
+  text-shadow: 0 0 .12em #fff, 0 0 .12em #fff;                /* halo where paint-order isn't supported */
+}
 .ov-box.mt-failed { background: rgba(0, 0, 0, .55); color: #fff; border-radius: 6px; }
 """
 
@@ -96,7 +112,7 @@ class MangaTranslate(Plugin):
             return Overlay(pending=True, message=self.offline or "Translating…")
         if data.get("error"):
             return Overlay(message=f"Couldn't translate this page: {data['error']}")
-        return Overlay(boxes=boxes_for(data))
+        return Overlay(boxes=boxes_for(data, box_classes(ctx)))
 
     def book_badges(self, ctx, books):
         done = ctx.page_data_counts(books)
@@ -400,20 +416,68 @@ def translate_page(ctx, book, page, result) -> dict:
                        for b, en in zip(blocks, english)]}
 
 
-def boxes_for(data):
+def box_classes(ctx):
+    """The look the owner picked in Settings, as CSS classes on each box (styled in `css` above)."""
+    out = []
+    bg = ctx.setting("box_bg") or "100"
+    if bg in ("75", "50", "25", "0"):
+        out.append(f"mt-bg-{bg}")
+    if ctx.setting("outline") == "on":
+        out.append("mt-outline")
+    return " ".join(out)
+
+
+GAP = 4  # pixels (of the saved page size) left between two grown boxes
+
+
+def boxes_for(data, cls=""):
     """Saved page -> boxes for the reader. The text box is grown a little: English needs more room
     than a column of Japanese, and the bubble around it is bigger anyway. Tall thin boxes (vertical
-    Japanese) are widened to at least 2/3 of their height, so English lines aren't one word each."""
+    Japanese) are widened to at least 2/3 of their height, so English lines aren't one word each.
+    A box never grows into a neighbour: where two would overlap, both grow less on the sides that
+    face each other."""
     w, h = data["w"], data["h"]
+    blocks = data.get("blocks", [])
+    rects = [b["box"] for b in blocks]
+    grow = []  # per box: how far each side moves out [left, top, right, bottom]
+    for x1, y1, x2, y2 in rects:
+        gx = max((x2 - x1) * 0.25, ((y2 - y1) * 0.66 - (x2 - x1)) / 2)
+        gy = (y2 - y1) * 0.08
+        grow.append([min(gx, x1), min(gy, y1), min(gx, w - x2), min(gy, h - y2)])
+    for i in range(len(rects)):
+        for j in range(i + 1, len(rects)):
+            _make_room(rects[i], grow[i], rects[j], grow[j])
     out = []
-    for b in data.get("blocks", []):
-        x1, y1, x2, y2 = b["box"]
-        grow_x = max((x2 - x1) * 0.25, ((y2 - y1) * 0.66 - (x2 - x1)) / 2)
-        grow_y = (y2 - y1) * 0.08
-        x1, x2 = max(0, x1 - grow_x), min(w, x2 + grow_x)
-        y1, y2 = max(0, y1 - grow_y), min(h, y2 + grow_y)
-        out.append(Box(x1 / w, y1 / h, (x2 - x1) / w, (y2 - y1) / h, text=b["text"], title=b["src"]))
+    for b, (x1, y1, x2, y2), (gl, gt, gr, gb) in zip(blocks, rects, grow):
+        x1, y1, x2, y2 = x1 - gl, y1 - gt, x2 + gr, y2 + gb
+        out.append(Box(x1 / w, y1 / h, (x2 - x1) / w, (y2 - y1) / h, text=b["text"], title=b["src"], cls=cls))
     return out
+
+
+def _make_room(a, ga, b, gb):
+    """If boxes a and b would overlap once grown, cut the growth of the sides facing each other
+    (both in proportion) on the axis where that takes the least away. Only ever shrinks, so pairs
+    fixed earlier stay apart. Boxes whose text already overlaps are left alone."""
+    best = None
+    for lo, hi in ((0, 2), (1, 3)):  # x axis: left/right sides; y axis: top/bottom
+        if a[hi] <= b[lo]:           # a before b on this axis
+            gap, sa, sb = b[lo] - a[hi], hi, lo
+        elif b[hi] <= a[lo]:         # b before a
+            gap, sa, sb = a[lo] - b[hi], lo, hi
+        else:
+            continue                 # the text overlaps on this axis: growth on it can't be the cause
+        need = ga[sa] + gb[sb] - max(0, gap - GAP)
+        if need <= 0:
+            return                   # apart on this axis even when grown
+        if best is None or need < best[0]:
+            best = (need, gap, sa, sb)
+    if best is None:
+        return
+    _, gap, sa, sb = best
+    room = max(0, gap - GAP)
+    scale = room / (ga[sa] + gb[sb])
+    ga[sa] *= scale
+    gb[sb] *= scale
 
 
 def test_connection(ctx) -> str:
