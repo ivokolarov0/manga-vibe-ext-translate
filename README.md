@@ -299,3 +299,6 @@ download or share any manga, and the translations are only shown to you, inside 
 
 The models are made by others and downloaded from their authors on first use; each has its own
 licence (see above). This project is provided as is, without any warranty.
+
+**Licence:** the code in this repo is [MIT](LICENSE): use, change and share it freely. The models it
+downloads are not part of it and keep their own licences.
