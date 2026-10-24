@@ -235,6 +235,8 @@ series until you switch it off.
 - **See the Japanese:** with a mouse, point at an English box.
 - **Remove a wrong box:** tap the middle of the page; each box gets a small **×**. Tap it.
   *Show hidden boxes* in the reading options brings them back.
+- **See the art through the boxes:** in the plugin's settings, set **Box background** to something
+  see-through, and switch on **White outline around the text** so the English stays readable.
 - **Translate ahead of time:** in the reading options, **Translate this chapter**. Or on the series
   page, **Plugin tools → Translate the whole series** (chapter after chapter; the page you're reading
   always goes first).
