@@ -56,7 +56,7 @@ class MangaTranslate(Plugin):
         SettingDef("ahead", "Pages to translate ahead", default="8",
                    help="Pages after the one you're reading that are translated in advance"),
         SettingDef("glossary", "Names and terms",
-                   help="Fixed translations, separated by ;  e.g.  先輩=senpai; 炭治郎=Tanjiro"),
+                   help="Fixed translations, separated by ;  e.g.  先輩=senpai; 春香=Haruka"),
     ]
     global_actions = [Action("test", "Test connection"), Action("stop", "Stop the queue")]
     actions = [Action("series", "Translate the whole series"),

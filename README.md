@@ -236,7 +236,7 @@ series until you switch it off.
 - **Better or different translation:** change the **Model** in the plugin's settings, then in the
   reader **Translate this chapter again**.
 - **Names:** if a name keeps coming out wrong, add it under **Names and terms**, like
-  `炭治郎=Tanjiro; 先輩=senpai` (Japanese = English, separated by `;`).
+  `春香=Haruka; 先輩=senpai` (Japanese = English, separated by `;`).
 - **Computer switched off?** Already translated pages still show. New pages wait, and the reader says
   *Can't reach the vision server*. When the computer and step 6 run again, it carries on by itself.
 
@@ -288,3 +288,14 @@ read and how it was translated.
 **The three models:** Manga-Bubble-YOLO finds the text, manga-ocr-nar reads the Japanese, and Gemma 4
 or Hy-MT2 translates. They are downloaded on first use. The text reading model is free for personal
 use only (CC BY-NC-SA 4.0), **not for commercial use**.
+
+## Legal
+
+Manga Translate is a tool for reading manga **you own**, on your own computer. It doesn't include,
+download or share any manga, and the translations are only shown to you, inside your own MangaVibe.
+
+- Don't use it to share or publish translated pages.
+- Please support the creators: buy the manga you read, and the official translations when they come out.
+
+The models are made by others and downloaded from their authors on first use; each has its own
+licence (see above). This project is provided as is, without any warranty.
