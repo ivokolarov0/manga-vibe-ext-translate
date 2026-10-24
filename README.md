@@ -235,8 +235,11 @@ series until you switch it off.
 - **See the Japanese:** with a mouse, point at an English box.
 - **Remove a wrong box:** tap the middle of the page; each box gets a small **×**. Tap it.
   *Show hidden boxes* in the reading options brings them back.
-- **See the art through the boxes:** in the plugin's settings, set **Box background** to something
-  see-through, and switch on **White outline around the text** so the English stays readable.
+- **See the art through the boxes:** in the reading options, tap **Box background** until the boxes
+  are as see-through as you like, and **Text outline** for a white outline that keeps the English
+  readable. (The plugin's settings have the same two options.)
+
+  <p align="center"><img src="docs/reader-options.webp" width="360" alt="In the reading options: Box background goes from solid to 50% to see-through, and Text outline adds a white outline around the English"></p>
 - **Translate ahead of time:** in the reading options, **Translate this chapter**. Or on the series
   page, **Plugin tools → Translate the whole series** (chapter after chapter; the page you're reading
   always goes first).
@@ -255,6 +258,32 @@ On the computer, do step 6 again: open a command window in the plugin folder and
 the menu bar, and after a restart of the Mac redo step 4).
 
 ---
+
+## How fast is it?
+
+About how long one page takes (a typical page with around 6 speech bubbles). These are estimates,
+except the `gemma4` time on 16 GB, which was measured on an RTX 5070 Ti.
+
+| Graphics memory | `manga-translate` | `gemma4` |
+|---|---|---|
+| **16 GB** (e.g. RTX 4070 Ti Super, 4080, 5070 Ti) | under 1 s | 2–4 s |
+| **12 GB** (e.g. RTX 3060 12 GB, 4070) | about 1 s | 3–5 s |
+| **8 GB** (e.g. RTX 3060 Ti, 4060) | 1–2 s | 5–10 s (only just fits) |
+| **4–6 GB** (e.g. GTX 1650, RTX 2060) | 2–4 s | not recommended: 20 s or more |
+| **No graphics card**, recent desktop (8+ cores, DDR5 memory, e.g. Ryzen 7 7700, Core i7-13700) | 3–6 s | 15–25 s |
+| **No graphics card**, older PC or laptop (4–6 cores, DDR4 memory) | 6–15 s | 40–80 s |
+
+- **Memory (RAM):** the model has to fit in the computer's memory too. `manga-translate` needs 8 GB
+  of RAM, `gemma4` 16 GB.
+- **CPU and RAM speed matter** without a graphics card, and when the model doesn't fully fit on the
+  card (`gemma4` on 8 GB or less): that part then runs on the CPU. Fast memory (DDR5, two sticks)
+  helps more than extra cores.
+- Most of the time is the translation; finding and reading the text takes under half a second
+  (1–3 s on CPU only).
+- **You usually only wait for the first page:** the next 8 are translated while you read.
+- The first page after starting the computer takes a few seconds longer, while Ollama loads the model.
+- **Mac:** Apple Silicon is roughly like the 8–12 GB rows. **AMD and Intel cards** are often a little
+  slower than NVIDIA cards with the same memory.
 
 ## Something doesn't work
 
