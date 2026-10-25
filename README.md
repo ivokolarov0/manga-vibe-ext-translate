@@ -15,7 +15,7 @@ service on the internet, and your manga never leaves your home network. The inte
 once, to download the programs and models.
 
 **What you install:** two programs, which together use three small AI models. That's normal: each
-model does one job.
+model does one job. (Why not one big model for everything? See [Why three models?](#why-three-models))
 
 | Program | Its models | Job |
 |---|---|---|
@@ -306,12 +306,12 @@ the menu bar, and after a restart of the Mac redo step 4).
 
 ## How fast is it?
 
-About how long one page takes (a typical page with around 6 speech bubbles). These are estimates,
-except the `gemma4` time on 16 GB, which was measured on an RTX 5070 Ti.
+About how long one page takes (a typical page with around 6 speech bubbles). The 16 GB row was
+measured on an RTX 5070 Ti; the other rows are estimates.
 
 | Graphics memory | `manga-translate` | `gemma4` |
 |---|---|---|
-| **16 GB** (e.g. RTX 4070 Ti Super, 4080, 5070 Ti) | under 1 s | 2–4 s |
+| **16 GB** (e.g. RTX 4070 Ti Super, 4080, 5070 Ti) | under 1 s | under 1 s (full context + picture: 2–3 s) |
 | **12 GB** (e.g. RTX 3060 12 GB, 4070) | about 1 s | 3–5 s |
 | **8 GB** (e.g. RTX 3060 Ti, 4060) | 1–2 s | 5–10 s (only just fits) |
 | **4–6 GB** (e.g. GTX 1650, RTX 2060) | 2–4 s | not recommended: 20 s or more |
@@ -329,6 +329,36 @@ except the `gemma4` time on 16 GB, which was measured on an RTX 5070 Ti.
 - The first page after starting the computer takes a few seconds longer, while Ollama loads the model.
 - **Mac:** Apple Silicon is roughly like the 8–12 GB rows. **AMD and Intel cards** are often a little
   slower than NVIDIA cards with the same memory.
+
+## Why three models?
+
+`gemma4` can see pictures, so it could do everything alone: look at the page, find the bubbles, read
+them and translate them. We tried that, and it's slower and much worse. Measured on a Japanese manga
+chapter (19 pages) on an RTX 5070 Ti. The three models found 86 speech bubbles; the table shows how
+many of those the single model put a box on:
+
+| | per page | Bubbles in the right place | Reads the Japanese | Translation |
+|---|---|---|---|---|
+| **Three models**, with `gemma4` | **0.65 s** | all 86 | almost always right | good, natural English |
+| **Three models**, with `manga-translate` | 0.7 s | all 86 | almost always right | OK, often gets names and meaning wrong |
+| **Three models**, with `gemma4:12b` | 1.2 s | all 86 | almost always right | good, about the same as `gemma4` |
+| **Three models**, with `gemma4`, full context + picture | 2.3 s | all 86 | almost always right | good, and says who speaks |
+| **`gemma4` alone** | 1.6 s | 38 of 86 | often wrong, bubbles cut into pieces | poor: bits like "To help", "Here" |
+| **`gemma4:12b` alone** | 4.6 s | 47 of 86 | often wrong, sometimes makes up lines | poor: says things the page doesn't |
+
+What goes wrong when one model does everything:
+
+- **It can't say where the text is.** Its boxes land on faces and on empty background, so the English
+  can't be put on top of the right bubble. That alone rules it out.
+- **It misreads the Japanese**, and one wrong letter can turn a line into its opposite: "it hurts"
+  became "I'm fine".
+- **It makes things up:** when it can't read a bubble, it writes an English line that has nothing to
+  do with the page.
+
+With three models, the small ones do what they're good at, fast: one finds the bubbles, one reads the
+Japanese (together under 0.2 s a page). The translation model then only has to translate clean text.
+They aren't perfect either: now and then a bubble is missed, or two bubbles next to each other become
+one box (remove a wrong box with **×**, see [Part 3](#part-3-reading)).
 
 ## Something doesn't work
 
