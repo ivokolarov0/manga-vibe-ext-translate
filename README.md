@@ -91,6 +91,9 @@ You'll use this folder in the next steps.
      ```
 4. Wait until it says **success**. Remember which one you picked: `gemma4` or `manga-translate`.
 
+   Only `gemma4` can do [full context](#full-context-who-says-what) translation, which keeps track
+   of the story and who speaks. `manga-translate` translates page by page.
+
 ### Step 4: Let MangaVibe talk to Ollama
 
 Ollama only talks to programs on the computer itself, until you change one setting. (You can skip
@@ -192,6 +195,8 @@ Click **Settings** next to Manga Translate and fill in (use your own numbers fro
 | **Vision server** | the address from step 6 | `http://192.168.1.50:7865` |
 | **LLM server** | the same numbers, but `:11434` at the end | `http://192.168.1.50:11434` |
 | **Model** | what you picked in step 3 | `gemma4` or `manga-translate` |
+| **Translation** | *Full context* with `gemma4`; *Page by page* with `manga-translate` | see [Full context](#full-context-who-says-what) |
+| **Show the page to the model** | *On* with `gemma4` and full context (better guesses of who speaks) | see [Full context](#full-context-who-says-what) |
 
 Leave the other boxes as they are. Click **Save**, then click **Test connection**.
 It should say *Vision server OK · LLM server OK, model found*. If not, see
@@ -243,13 +248,53 @@ series until you switch it off.
 - **Translate ahead of time:** in the reading options, **Translate this chapter**. Or on the series
   page, **Plugin tools → Translate the whole series** (chapter after chapter; the page you're reading
   always goes first).
-- **See what's done:** chapters show **Translated** or **Translated 12/40** in the series' book list.
+- **See what's done:** chapters show **Translated**, **Translated · full context** or
+  **Translated 12/40** in the series' book list.
 - **Better or different translation:** change the **Model** in the plugin's settings, then in the
   reader **Translate this chapter again**.
 - **Names:** if a name keeps coming out wrong, add it under **Names and terms**, like
   `春香=Haruka; 先輩=senpai` (Japanese = English, separated by `;`).
 - **Computer switched off?** Already translated pages still show. New pages wait, and the reader says
   *Can't reach the vision server*. When the computer and step 6 run again, it carries on by itself.
+
+### Full context: who says what
+
+Page by page, each page is translated on its own, so the model doesn't know who is talking, what
+happened before, or who "that guy" is. With **Translation** set to **Full context** (in the plugin's
+settings), each page goes to the model together with:
+
+- the series' description (from MangaVibe's metadata),
+- notes on the characters (Japanese name, English name, who they are, how they talk) and the story so far,
+- the two pages before it, with who said what, and the page after it.
+
+The model also says **who speaks each bubble**: point at an English box to see the name and the
+Japanese. When a chapter is finished, the model updates the notes, and the next chapter starts from
+them. So names, voices and references stay the same from chapter to chapter.
+
+**Show the page to the model** (a second setting) makes the speaker guesses much better. The model
+also gets the page picture, with each bubble framed and numbered, and first says whom each bubble
+belongs to: the person its tail points to, or the one next to it. From the text alone it can only
+guess, and in a back-and-forth it easily swaps two people. It also remembers how each character looks
+("Haruka: brown hair, red bow"), so it knows them on later pages.
+
+In the reader, tap the middle of the page: under the chapter's name it says how the page was
+translated and who speaks on it, e.g. *Full context + picture · Haruka, Taro* (or *Page by page*).
+This needs MangaVibe 1.12.0 or newer; on older versions everything else works, without this line.
+
+- **Needs `gemma4`** (or a similar model; for the picture, one that can see pictures). With
+  `manga-translate` the pages are still translated page by page, and **Test connection** says so.
+- **Best in order:** the notes build up chapter by chapter. Use **Plugin tools → Translate the whole
+  series** once, then read. A chapter you translate first, without the ones before it, has no notes yet.
+- **Chapters translated before** stay as they are. In the reader, **Translate this chapter again**
+  redoes one with full context.
+- It's slower, since each page sends more to the model. Measured with `gemma4` on an RTX 5070 Ti, for
+  short test pages (4–6 bubbles):
+
+  | | per page |
+  |---|---|
+  | Page by page | about 0.3–0.4 s |
+  | Full context | about 0.5–0.8 s |
+  | Full context + picture | about 1.0–1.3 s (the first page after starting takes ~6 s more, once) |
 
 ### Every time you want to read new chapters
 
@@ -312,6 +357,16 @@ uv run try_pages.py <path to the folder> --model gemma4
 
 It makes `report.html` in that folder: every page with the English on top, and a list of what was
 read and how it was translated.
+
+To try full context, add `--context`, and `--notes notes.json` to keep the notes between chapters
+(run it chapter after chapter with the same file):
+
+```
+uv run try_pages.py <chapter 1 folder> --model gemma4 --context --notes notes.json
+uv run try_pages.py <chapter 2 folder> --model gemma4 --context --notes notes.json
+```
+
+Add `--picture` to show the pages to the model too.
 
 ## What's in this folder
 
