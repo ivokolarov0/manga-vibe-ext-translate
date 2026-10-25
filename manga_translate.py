@@ -38,7 +38,7 @@ from app.plugins import Action, Box, Overlay, Plugin, SettingDef
 # versions don't, and then the notes are saved with each chapter's last page instead
 HAS_NOTE = "note" in getattr(Overlay, "__dataclass_fields__", {})
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 DATA_VERSION = 1          # the format of what is saved per page
 SEND_WIDTH = 1600         # pages are shrunk to this width before they go to the PC
 OFFLINE_RETRY = 15        # seconds between tries while the PC can't be reached
