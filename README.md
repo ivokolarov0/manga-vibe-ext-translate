@@ -155,7 +155,7 @@ This is the part that finds the speech bubbles and reads the Japanese.
    ```
 3. The first time, it downloads what it needs (a few minutes). Then it shows something like:
    ```
-   Manga vision server 1.0.0 is running on GPU (DirectML).
+   Manga vision server 1.1.0 is running on GPU (DirectML).
    In MangaVibe, use this address:  http://192.168.1.50:7865
    ```
    **Write down that address.** The numbers in the middle (`192.168.1.50`) are your computer's
@@ -250,6 +250,10 @@ series until you switch it off.
   always goes first).
 - **See what's done:** chapters show **Translated**, **Translated · full context** or
   **Translated 12/40** in the series' book list.
+- **A bubble isn't translated:** the text finder wasn't sure enough it was text. In the plugin's
+  settings, set **Bubble detection** to **More** (or **Most**), then in the reader **Translate this
+  chapter again**. It finds more bubbles, but also some wrong boxes: remove those with **×**. Too
+  many wrong boxes? Set it back to **Normal**, or **Fewer**.
 - **Better or different translation:** change the **Model** in the plugin's settings, then in the
   reader **Translate this chapter again**.
 - **Names:** if a name keeps coming out wrong, add it under **Names and terms**, like
@@ -358,7 +362,8 @@ What goes wrong when one model does everything:
 With three models, the small ones do what they're good at, fast: one finds the bubbles, one reads the
 Japanese (together under 0.2 s a page). The translation model then only has to translate clean text.
 They aren't perfect either: now and then a bubble is missed, or two bubbles next to each other become
-one box (remove a wrong box with **×**, see [Part 3](#part-3-reading)).
+one box (remove a wrong box with **×**, see [Part 3](#part-3-reading); for missed bubbles, try
+**Bubble detection** in the plugin's settings).
 
 ## Something doesn't work
 
@@ -396,7 +401,8 @@ uv run try_pages.py <chapter 1 folder> --model gemma4 --context --notes notes.js
 uv run try_pages.py <chapter 2 folder> --model gemma4 --context --notes notes.json
 ```
 
-Add `--picture` to show the pages to the model too.
+Add `--picture` to show the pages to the model too. To see what **Bubble detection** changes, add
+`--threshold 0.2` (More) or `--threshold 0.1` (Most); Normal is 0.3.
 
 ## What's in this folder
 

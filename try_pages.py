@@ -5,7 +5,7 @@
 """Try the translation on a few pages before using it in MangaVibe.
 
     uv run try_pages.py PAGE_OR_FOLDER [...] [--vision URL] [--llm URL] [--model NAME]
-                        [--context] [--picture] [--notes FILE]
+                        [--context] [--picture] [--notes FILE] [--threshold N]
 
 Sends each page to the vision server and the text to the LLM, then writes report.html next to
 the first page: every page with the English drawn over it, and a table of Japanese -> English.
@@ -19,6 +19,8 @@ Pages are treated as one chapter in file-name order.
   --notes FILE   with --context: the notes on the characters and story to start from (if the file
                  exists), and where the updated notes are written afterwards. Run chapter after
                  chapter with the same file to see how the notes carry over.
+  --threshold N  how sure the text finder must be, as the plugin's "Bubble detection" setting
+                 (default: the server's, 0.3). Lower, like 0.2, finds more bubbles and more wrong boxes.
 
 The translation is the plugin's own code (manga_translate.py, next to this file).
 """
@@ -66,8 +68,9 @@ def how(data) -> str:
     return data["mode"] + (" + picture" if data.get("picture") else "")
 
 
-def read_page(vision: str, path: Path) -> dict:
-    req = urllib.request.Request(vision.rstrip("/") + "/page", path.read_bytes(),
+def read_page(vision: str, path: Path, threshold: float | None = None) -> dict:
+    url = vision.rstrip("/") + "/page" + (f"?threshold={threshold}" if threshold else "")
+    req = urllib.request.Request(url, path.read_bytes(),
                                  {"Content-Type": "application/octet-stream"})
     with urllib.request.urlopen(req, timeout=120) as r:
         return json.load(r)
@@ -82,6 +85,9 @@ def main():
     ap.add_argument("--context", action="store_true", help="full context (needs a model like gemma4)")
     ap.add_argument("--picture", action="store_true", help="with --context: show the page to the model")
     ap.add_argument("--notes", help="with --context: notes file to start from and to write")
+    ap.add_argument("--threshold", type=float,
+                    help="how sure the text finder must be, as the plugin's Bubble detection setting "
+                         "(default: the server's, 0.3). Lower finds more bubbles")
     ap.add_argument("--out", help="where to write the report (default: report.html next to the pages)")
     args = ap.parse_args()
     for stream in (sys.stdout, sys.stderr):
@@ -106,7 +112,7 @@ def main():
     read, vision_ms = [], []
     for f in files:  # all pages first: full context looks at the next page too
         t0 = time.perf_counter()
-        read.append(read_page(args.vision, f))
+        read.append(read_page(args.vision, f, args.threshold))
         vision_ms.append(1000 * (time.perf_counter() - t0))
 
     sections, done = [], []
