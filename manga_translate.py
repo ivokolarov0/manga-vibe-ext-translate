@@ -38,7 +38,7 @@ from app.plugins import Action, Box, Overlay, Plugin, SettingDef
 # versions don't, and then the notes are saved with each chapter's last page instead
 HAS_NOTE = "note" in getattr(Overlay, "__dataclass_fields__", {})
 
-VERSION = "0.3.1"
+VERSION = "0.4.0"
 DATA_VERSION = 1          # the format of what is saved per page
 SEND_WIDTH = 1600         # pages are shrunk to this width before they go to the PC
 OFFLINE_RETRY = 15        # seconds between tries while the PC can't be reached
@@ -80,6 +80,14 @@ class MangaTranslate(Plugin):
                    help="Full context only: the page picture goes with the text, each bubble marked with its "
                         "number, so the model sees who each bubble belongs to. Needs a model that can see "
                         "pictures, like gemma4. A little slower."),
+        SettingDef("threshold", "Bubble detection", default="normal",
+                   options=[("normal", "Normal"),
+                            ("0.2", "More (finds faint or odd-shaped bubbles)"),
+                            ("0.1", "Most (also finds more wrong boxes)"),
+                            ("0.45", "Fewer (only clear bubbles)")],
+                   help="How sure the text finder must be before it marks text. If bubbles are missed, try "
+                        "More, then in the reader Translate this chapter again. Remove wrong boxes with ×. "
+                        "Normal uses the vision server's own setting (0.3 unless started with --threshold)."),
         SettingDef("target", "Translate into", default="English"),
         SettingDef("ahead", "Pages to translate ahead", default="8",
                    help="Pages after the one you're reading that are translated in advance"),
@@ -131,6 +139,12 @@ class MangaTranslate(Plugin):
         with self.ocr_lock:
             return self.ocr.get(key)
 
+    def ocr_forget(self, book_id):
+        """Drops the remembered vision results of one book, so its pages are read again."""
+        with self.ocr_lock:
+            for key in [k for k in self.ocr if k[0] == book_id]:
+                del self.ocr[key]
+
     def ocr_put(self, key, result):
         with self.ocr_lock:
             self.ocr[key] = result
@@ -176,6 +190,7 @@ class MangaTranslate(Plugin):
     def run_book_action(self, ctx, key, book):
         if key == "again":
             ctx.clear_page_data(book)
+            self.ocr_forget(book.id)  # a changed Bubble detection must take effect
             save_notes(ctx, book, None)
         saved = ctx.page_data(book)
         todo = [p for p in range(book.page_count) if p not in saved]
@@ -189,6 +204,7 @@ class MangaTranslate(Plugin):
         if key == "forget":
             for b in books:
                 ctx.clear_page_data(b)
+                self.ocr_forget(b.id)
             if hasattr(ctx, "clear_series_data"):
                 ctx.clear_series_data(series)
             return "Translations deleted"
@@ -438,16 +454,26 @@ def llm_base(ctx):
     return base if base.endswith("/v1") else base + "/v1"
 
 
+def detection_params(ctx) -> dict:
+    """The Bubble detection setting as ?threshold=; nothing for Normal (the server decides).
+    Vision servers older than 1.1.0 ignore it."""
+    try:
+        return {"threshold": str(min(max(float(ctx.setting("threshold")), 0.05), 0.95))}
+    except (TypeError, ValueError):
+        return {}
+
+
 def read_text(ctx, image: bytes) -> dict:
     """Page image -> {"width", "height", "blocks": [{"box": [x1, y1, x2, y2, score], "text"}]}."""
     vision = _url(ctx.setting("vision_url"))
     ocr = _url(ctx.setting("ocr_url")) or vision
+    params = detection_params(ctx)
     with httpx.Client(timeout=120) as http:
         if ocr == vision:  # one server does both: one call
-            r = http.post(vision + "/page", content=image)
+            r = http.post(vision + "/page", content=image, params=params)
             r.raise_for_status()
             return r.json()
-        r = http.post(vision + "/detect", content=image)
+        r = http.post(vision + "/detect", content=image, params=params)
         r.raise_for_status()
         found = r.json()
         texts = []

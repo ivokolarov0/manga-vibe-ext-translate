@@ -28,6 +28,8 @@ API (all answers are JSON):
   POST /ocr      body: {"image": "<base64>", "boxes": [[x1, y1, x2, y2], ...]} -> {"texts": [...]}
   POST /page     body: the page image -> {"width", "height", "blocks": [{"box": [...], "text": "..."}]}
                  (/detect and /ocr in one call)
+  /detect and /page take ?threshold=0.2 (0.05 to 0.95): lower finds more bubbles, and more wrong
+  boxes. Without it: --threshold, default 0.3.
 """
 from __future__ import annotations
 
@@ -43,6 +45,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs
 
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
@@ -52,7 +55,7 @@ import onnxruntime as ort
 from huggingface_hub import hf_hub_download, snapshot_download
 from PIL import Image
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 DETECTOR_REPO, DETECTOR_FILE = "Kiuyha/Manga-Bubble-YOLO", "onnx/yolo26n.onnx"
 OCR_REPO = "muscgab/manga-ocr-nar-small"
 MAX_BODY = 40 * 1024 * 1024
@@ -88,8 +91,9 @@ class Detector:
         self.input = self.sess.get_inputs()[0].name
         self.threshold = threshold
 
-    def __call__(self, image: Image.Image) -> list[list[float]]:
+    def __call__(self, image: Image.Image, threshold: float | None = None) -> list[list[float]]:
         """-> [[x1, y1, x2, y2, score], ...] in page pixels, in reading order."""
+        threshold = self.threshold if threshold is None else threshold
         w, h = image.size
         scale = self.SIZE / max(w, h)
         nw, nh = max(1, round(w * scale)), max(1, round(h * scale))
@@ -99,7 +103,7 @@ class Detector:
         out = self.sess.run(None, {self.input: x})[0][0]  # [300, 6]: x1 y1 x2 y2 score class
         boxes = []
         for x1, y1, x2, y2, score, _cls in out:
-            if score < self.threshold:
+            if score < threshold:
                 continue
             x1, x2 = sorted((min(max(x1 / scale, 0), w), min(max(x2 / scale, 0), w)))
             y1, y2 = sorted((min(max(y1 / scale, 0), h), min(max(y2 / scale, 0), h)))
@@ -205,15 +209,25 @@ class Ocr:
 # --- web server -----------------------------------------------------------------------------------
 
 class App:
-    def __init__(self, cpu: bool):
+    def __init__(self, cpu: bool, threshold: float = 0.3):
         print("Loading the text position model...", flush=True)
-        self.detector = Detector(cpu)
+        self.detector = Detector(cpu, threshold)
         print("Loading the OCR model...", flush=True)
         self.ocr = Ocr(cpu)
         self.lock = threading.Lock()  # one page at a time keeps GPU memory low
         self.info = {"ok": True, "name": "manga-vision", "version": VERSION,
                      "device": device_name(self.detector.sess),
                      "detector": f"{DETECTOR_REPO}/{DETECTOR_FILE}", "ocr": OCR_REPO, "language": "ja"}
+
+
+def query_threshold(query: str) -> float | None:
+    """?threshold=0.2 -> 0.2, kept between 0.05 and 0.95. Missing or not a number: None."""
+    for value in parse_qs(query).get("threshold", []):
+        try:
+            return min(max(float(value), 0.05), 0.95)
+        except ValueError:
+            pass
+    return None
 
 
 def open_image(data: bytes) -> Image.Image:
@@ -243,7 +257,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(404, {"error": "not found"})
 
     def do_POST(self):
-        path = self.path.split("?")[0]
+        path, _, query = self.path.partition("?")
         if path not in ("/detect", "/ocr", "/page"):
             return self._send(404, {"error": "not found"})
         length = int(self.headers.get("Content-Length") or 0)
@@ -262,7 +276,7 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/ocr":
                     result = {"texts": self.app.ocr(image, boxes)}
                 else:
-                    boxes = self.app.detector(image)
+                    boxes = self.app.detector(image, query_threshold(query))
                     result = {"width": image.width, "height": image.height, "boxes": boxes}
                     if path == "/page":
                         texts = self.app.ocr(image, boxes)
@@ -311,11 +325,14 @@ def main():
     ap.add_argument("--host", default="0.0.0.0", help="address to listen on (default: the whole network)")
     ap.add_argument("--port", type=int, default=7865)
     ap.add_argument("--cpu", action="store_true", help="don't use the GPU")
+    ap.add_argument("--threshold", type=float, default=0.3,
+                    help="how sure the text finder must be (default 0.3). Lower finds more bubbles, and "
+                         "more wrong boxes. MangaVibe's Bubble detection setting overrides it per page.")
     args = ap.parse_args()
     for stream in (sys.stdout, sys.stderr):  # a console that can't show Japanese must not crash us
         stream.reconfigure(errors="replace")
 
-    Handler.app = App(args.cpu)
+    Handler.app = App(args.cpu, min(max(args.threshold, 0.05), 0.95))
     server = make_server(args.host, args.port)
     print(f"\nManga vision server {VERSION} is running on {Handler.app.info['device']}.")
     print(f"In MangaVibe, use this address:  http://{lan_ip()}:{args.port}")
