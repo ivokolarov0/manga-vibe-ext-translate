@@ -25,6 +25,7 @@ model does one job. (Why not one big model for everything? See [Why three models
 So you need:
 
 - **MangaVibe 1.7.0 or newer**, on any machine: a NAS, a home server, or the same computer
+  (2.0.0 or newer for [the editor](#fix-a-page-yourself-the-editor))
 - **A computer with a graphics card**, on the same home network. It must be switched on while you
   read new chapters.
   - **Windows:** NVIDIA, AMD or Intel graphics, 4 GB or more
@@ -238,6 +239,8 @@ series until you switch it off.
 **Good to know:**
 
 - **See the Japanese:** with a mouse, point at an English box.
+- **Fix a page yourself:** in the reading options, **Manga Translate → Edit this page**. See
+  [the editor](#fix-a-page-yourself-the-editor) below.
 - **Remove a wrong box:** tap the middle of the page; each box gets a small **×**. Tap it.
   *Show hidden boxes* in the reading options brings them back.
 - **See the art through the boxes:** in the reading options, tap **Box background** until the boxes
@@ -260,6 +263,36 @@ series until you switch it off.
   `春香=Haruka; 先輩=senpai` (Japanese = English, separated by `;`).
 - **Computer switched off?** Already translated pages still show. New pages wait, and the reader says
   *Can't reach the vision server*. When the computer and step 6 run again, it carries on by itself.
+
+### Fix a page yourself: the editor
+
+A translation is wrong, a bubble was missed, or a box sits badly? Open the page, tap the middle,
+open the reading options (**☰**) → **Manga Translate** → **Edit this page**. The page opens in the
+editor: the page with its boxes on one side, the texts on the other. Close it and you're back in
+the reader, with your changes on the page. It needs MangaVibe 2.0.0 or newer, and an admin account.
+
+- **Change the text:** every box has a card with the **Japanese (as read)** and the **Translation**.
+  Type in either. **Translate** translates the Japanese again (after you fixed a misread letter, for
+  example); **Read again** reads the Japanese from the page again. You can press Enter for a new line.
+- **Move and resize:** drag a box; drag its handles to resize it. With a keyboard, the arrow keys
+  move the selected box a little (Shift: more).
+- **Change the look:** select a box, and its card shows **Size** (Auto fits the text to the box; the
+  slider sets a size of your own), bold, italic, capital letters, the font, the alignment, and the
+  colour of the text and of the box. **Use this look for all boxes** copies it to the whole page.
+- **Text that wasn't found:** press **Scan text** and drag a frame around the Japanese on the page.
+  It is read and translated, and becomes a new box. A close frame around the text reads best.
+- **A box of your own:** press **+ Text box**, drag where it should go, and type.
+- **Hide or delete:** **Hide** keeps a box but doesn't show it in the reader; **Delete** removes it.
+- **See the page underneath:** **Hide boxes** (the boxes come back with the same button). **−**,
+  **Fit** and **+** change the size of the page.
+- **Undo** takes back the last change (Ctrl+Z). **Save** saves the page (Ctrl+S); going to another
+  page with **‹ ›** saves too. Closing with unsaved changes asks first.
+- **Start over:** **Translate this page again** throws away the page's boxes, your changes too, and
+  translates it afresh.
+
+Pages you edited are yours: **Translate this chapter again** leaves them as they are and redoes only
+the others. Boxes you edited stay exactly where you put them, and scanning and translating in the
+editor use the same servers as reading, so the computer must be on (step 6).
 
 ### Full context: who says what
 
@@ -408,7 +441,7 @@ Add `--picture` to show the pages to the model too. To see what **Bubble detecti
 
 | File | What it is |
 |---|---|
-| `manga_translate.py` | the plugin; goes into MangaVibe's plugins folder |
+| `manga_translate.py` | the plugin, with its editor; goes into MangaVibe's plugins folder |
 | `manga_vision_server.py` | the text reader that runs on your computer (step 6) |
 | `Modelfile` | settings for the small translation model (step 3) |
 | `try_pages.py` | the test tool above |
