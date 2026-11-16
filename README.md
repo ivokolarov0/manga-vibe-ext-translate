@@ -156,7 +156,7 @@ This is the part that finds the speech bubbles and reads the Japanese.
    ```
 3. The first time, it downloads what it needs (a few minutes). Then it shows something like:
    ```
-   Manga vision server 1.1.0 is running on GPU (DirectML).
+   Manga vision server 1.2.0 is running on GPU (DirectML).
    In MangaVibe, use this address:  http://192.168.1.50:7865
    ```
    **Write down that address.** The numbers in the middle (`192.168.1.50`) are your computer's
@@ -274,6 +274,11 @@ the reader, with your changes on the page. It needs MangaVibe 2.0.0 or newer, an
 - **Change the text:** every box has a card with the **Japanese (as read)** and the **Translation**.
   Type in either. **Translate** translates the Japanese again (after you fixed a misread letter, for
   example); **Read again** reads the Japanese from the page again. You can press Enter for a new line.
+- **Can't read Japanese?** Under each Japanese text is its **romaji**: how it is said, in Latin
+  letters (今日はいい天気だね → *kyō wa ii tenki da ne*). It follows what you type. It needs the text
+  reader from this version (it should say *Manga vision server 1.2.0*): download the ZIP again,
+  replace `manga_vision_server.py`, and start it again (step 6); the first start downloads a small
+  dictionary. It's worked out with a dictionary, so a name or a rare word can be read wrong.
 - **Move and resize:** drag a box; drag its handles to resize it. With a keyboard, the arrow keys
   move the selected box a little (Shift: more).
 - **Change the look:** select a box, and its card shows **Size** (Auto fits the text to the box; the
@@ -299,7 +304,7 @@ the reader, with your changes on the page. It needs MangaVibe 2.0.0 or newer, an
 |---|---|
 | **+** / **−** / **0** | zoom in / zoom out / fit the page |
 | **H** | hide or show the boxes |
-| **Shift + ←** / **Shift + →** | next / previous page, while no box is selected |
+| **Shift + →** / **Shift + ←** | next / previous page, while no box is selected |
 | **Shift + click** | a new text box at that place |
 | **Ctrl + drag** | scan text: read and translate what is in the frame |
 | **Arrow keys** | move the selected box a little (with Shift: more) |

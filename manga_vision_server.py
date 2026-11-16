@@ -6,6 +6,8 @@
 #   "huggingface_hub",
 #   "onnxruntime-directml; sys_platform == 'win32'",
 #   "onnxruntime; sys_platform != 'win32'",
+#   "fugashi",
+#   "unidic-lite",
 # ]
 # ///
 """MangaVibe vision server: finds the text on a manga page and reads it (Japanese).
@@ -20,6 +22,7 @@ MangaVibe -> Settings -> Plugins -> Manga Translate.
 Models:
   - text position: Kiuyha/Manga-Bubble-YOLO (YOLO26 nano, ONNX)
   - OCR:           muscgab/manga-ocr-nar-small (ONNX). Weights are CC BY-NC-SA 4.0: non-commercial use only.
+  - romaji:        no model: the MeCab tokenizer (fugashi) with the small UniDic dictionary (unidic-lite)
 
 API (all answers are JSON):
   GET  /health   -> {"ok": true, "device": ..., ...}
@@ -30,6 +33,8 @@ API (all answers are JSON):
                  (/detect and /ocr in one call)
   /detect and /page take ?threshold=0.2 (0.05 to 0.95): lower finds more bubbles, and more wrong
   boxes. Without it: --threshold, default 0.3.
+  POST /romaji   body: {"texts": ["今日はいい天気だね", ...]} -> {"romaji": ["kyō wa ii tenki da ne", ...]}
+                 how the Japanese is said, in Latin letters, for the plugin's editor
 """
 from __future__ import annotations
 
@@ -55,7 +60,7 @@ import onnxruntime as ort
 from huggingface_hub import hf_hub_download, snapshot_download
 from PIL import Image
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 DETECTOR_REPO, DETECTOR_FILE = "Kiuyha/Manga-Bubble-YOLO", "onnx/yolo26n.onnx"
 OCR_REPO = "muscgab/manga-ocr-nar-small"
 MAX_BODY = 40 * 1024 * 1024
@@ -206,6 +211,106 @@ class Ocr:
         return texts
 
 
+# --- romaji ---------------------------------------------------------------------------------------
+# How Japanese text is said, in Latin letters (Hepburn), for someone who can't read the characters:
+# 今日はいい天気だね -> "kyō wa ii tenki da ne". A tokenizer with a dictionary splits the text into
+# words and gives each one's pronunciation in katakana (so は as a particle is "wa", and kanji get
+# their reading); the table below turns the katakana into letters.
+
+def _kana_table() -> dict:
+    rows = {"": "アイウエオ", "k": "カキクケコ", "s": "サシスセソ", "t": "タチツテト", "n": "ナニヌネノ",
+            "h": "ハヒフヘホ", "m": "マミムメモ", "r": "ラリルレロ", "g": "ガギグゲゴ", "z": "ザジズゼゾ",
+            "d": "ダヂヅデド", "b": "バビブベボ", "p": "パピプペポ"}
+    table = {kana: c + v for c, kanas in rows.items() for kana, v in zip(kanas, "aiueo")}
+    table.update({"シ": "shi", "チ": "chi", "ツ": "tsu", "フ": "fu", "ジ": "ji", "ヂ": "ji", "ヅ": "zu",
+                  "ヤ": "ya", "ユ": "yu", "ヨ": "yo", "ワ": "wa", "ヲ": "o", "ヰ": "i", "ヱ": "e", "ヴ": "vu",
+                  "ァ": "a", "ィ": "i", "ゥ": "u", "ェ": "e", "ォ": "o", "ャ": "ya", "ュ": "yu", "ョ": "yo", "ヮ": "wa"})
+    # two kana said as one: キャ kya, シュ shu, チョ cho, ジャ ja ...
+    for kana, c in {"キ": "ky", "ギ": "gy", "ニ": "ny", "ヒ": "hy", "ビ": "by", "ピ": "py", "ミ": "my", "リ": "ry",
+                    "シ": "sh", "チ": "ch", "ジ": "j", "ヂ": "j"}.items():
+        table.update({kana + small: c + v for small, v in zip("ャュョ", "auo")})
+    # ... and the ones only foreign words have
+    table.update({"ファ": "fa", "フィ": "fi", "フェ": "fe", "フォ": "fo", "フュ": "fyu", "ティ": "ti", "ディ": "di",
+                  "トゥ": "tu", "ドゥ": "du", "テュ": "tyu", "デュ": "dyu", "ウィ": "wi", "ウェ": "we", "ウォ": "wo",
+                  "ヴァ": "va", "ヴィ": "vi", "ヴェ": "ve", "ヴォ": "vo", "シェ": "she", "ジェ": "je", "チェ": "che",
+                  "ツァ": "tsa", "ツィ": "tsi", "ツェ": "tse", "ツォ": "tso", "イェ": "ye", "クァ": "kwa", "グァ": "gwa"})
+    return table
+
+
+KANA = _kana_table()
+LONG = {"a": "ā", "i": "ii", "u": "ū", "e": "ē", "o": "ō"}  # a long i is written ii, as usual
+MARKS = {"、": ",", "。": ".", "！": "!", "？": "?", "：": ":", "；": ";", "，": ",", "．": ".", "・": "·", "〜": "~",
+         "～": "~", "「": "“", "」": "”", "『": "“", "』": "”", "（": "(", "）": ")", "　": " "}
+OPENING = "“(["
+
+
+def kana_to_romaji(text: str) -> str:
+    """Katakana or hiragana -> Hepburn letters. Anything else (a kanji the dictionary didn't know,
+    Latin letters, digits) stays as it is."""
+    text = "".join(chr(ord(c) + 0x60) if "ぁ" <= c <= "ゖ" else c for c in text)  # hiragana -> katakana
+    out, double, i = [], False, 0
+    while i < len(text):
+        pair, one = text[i:i + 2], text[i]
+        if pair in KANA:
+            part, i = KANA[pair], i + 2
+        elif one == "ッ":  # the next consonant is said twice: マッテ -> matte, マッチャ -> matcha
+            double, i = True, i + 1
+            continue
+        elif one == "ー":  # a long vowel: トーキョー -> tōkyō
+            last = out[-1] if out else ""
+            if last and last[-1] in LONG:
+                out[-1] = last[:-1] + LONG[last[-1]]
+            elif last:
+                out.append("-")
+            i += 1
+            continue
+        elif one == "ン":  # n' before a vowel or y, so it isn't read as na, ni, nya ...
+            after = KANA.get(text[i + 1:i + 3]) or KANA.get(text[i + 1:i + 2]) or ""
+            part, i = "n'" if after[:1] in tuple("aiueoy") else "n", i + 1
+        else:
+            part, i = KANA.get(one, one), i + 1
+        if double and part[:1].isalpha() and part[:1] not in "aiueo":
+            part = ("t" if part.startswith("ch") else part[0]) + part
+        double = False
+        out.append(part)
+    return "".join(out)
+
+
+class Romaji:
+    def __init__(self):
+        import fugashi
+        self.tagger = fugashi.Tagger()
+        self.lock = threading.Lock()  # one text at a time: the tokenizer isn't made for several threads
+
+    def __call__(self, text: str) -> str:
+        with self.lock:
+            words = [(w.surface, getattr(w.feature, "pron", None), getattr(w.feature, "pos1", ""),
+                      getattr(w.feature, "pos2", "")) for w in self.tagger(text)]
+        parts = []  # [text, whether it's a word (not a mark)]
+        verb = False  # the word being built is a verb or adjective (with its endings so far)
+        for surface, said, pos1, pos2 in words:
+            kana = said if said and said != "*" else surface
+            if pos1 in ("補助記号", "空白") or surface in MARKS:
+                # a small っ on its own (a cut-off word: あっ, お兄ちゃんっ) has no sound to write
+                parts.append(["".join(MARKS.get(c, c) for c in surface if c not in "っッ"), False])
+                verb = False
+            # endings belong to the word before them: 行き + まし + た -> ikimashita, 待っ + て -> matte.
+            # Not after a noun: 天気 + だ stays "tenki da"
+            elif parts and parts[-1][1] and (pos1 == "接尾辞" or (verb and (
+                    pos1 == "助動詞" or (pos1 == "助詞" and pos2 in ("接続助詞", "準体助詞"))))):
+                parts[-1][0] += kana
+            else:
+                parts.append([kana, True])
+                verb = pos1 in ("動詞", "形容詞", "助動詞")
+        out = ""
+        for text_, word in parts:
+            if word:
+                out += (" " if out and out[-1] not in OPENING + " " else "") + kana_to_romaji(text_)
+            else:  # marks follow the word; an opening quote or bracket comes before the next one
+                out += (" " if out and text_[:1] in OPENING and out[-1] != " " else "") + text_
+        return out.strip()
+
+
 # --- web server -----------------------------------------------------------------------------------
 
 class App:
@@ -214,10 +319,16 @@ class App:
         self.detector = Detector(cpu, threshold)
         print("Loading the OCR model...", flush=True)
         self.ocr = Ocr(cpu)
+        try:
+            self.romaji = Romaji()
+        except Exception as e:  # e.g. no build of the tokenizer for this computer: everything else still works
+            print(f"Romaji isn't available here ({type(e).__name__}: {e}). The rest works as usual.", flush=True)
+            self.romaji = None
         self.lock = threading.Lock()  # one page at a time keeps GPU memory low
         self.info = {"ok": True, "name": "manga-vision", "version": VERSION,
                      "device": device_name(self.detector.sess),
-                     "detector": f"{DETECTOR_REPO}/{DETECTOR_FILE}", "ocr": OCR_REPO, "language": "ja"}
+                     "detector": f"{DETECTOR_REPO}/{DETECTOR_FILE}", "ocr": OCR_REPO, "language": "ja",
+                     "romaji": self.romaji is not None}
 
 
 def query_threshold(query: str) -> float | None:
@@ -258,13 +369,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path, _, query = self.path.partition("?")
-        if path not in ("/detect", "/ocr", "/page"):
+        if path not in ("/detect", "/ocr", "/page", "/romaji"):
             return self._send(404, {"error": "not found"})
         length = int(self.headers.get("Content-Length") or 0)
         if not 0 < length <= MAX_BODY:
             return self._send(413, {"error": "send one page image (at most 40 MB)"})
         data = self.rfile.read(length)
         started = time.perf_counter()
+        if path == "/romaji":
+            if self.app.romaji is None:
+                return self._send(501, {"error": "romaji isn't available on this computer"})
+            try:
+                texts = [str(t)[:2000] for t in json.loads(data)["texts"]][:500]
+                result = {"romaji": [self.app.romaji(t) for t in texts]}
+            except Exception as e:
+                print(f"  {path} failed: {type(e).__name__}: {e}", flush=True)
+                return self._send(400, {"error": f"{type(e).__name__}: {e}"})
+            print(f"  {path}: {len(texts)} texts, {(time.perf_counter() - started) * 1000:.0f} ms", flush=True)
+            return self._send(200, result)
         try:
             if path == "/ocr":
                 req = json.loads(data)
