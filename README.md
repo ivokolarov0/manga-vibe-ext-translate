@@ -239,7 +239,7 @@ series until you switch it off.
 **Good to know:**
 
 - **See the Japanese:** with a mouse, point at an English box.
-- **Fix a page yourself:** in the reading options, **Manga Translate → Edit this page**. See
+- **Fix a page yourself:** in the reading options, **Manga Translate → Edit translation**. See
   [the editor](#fix-a-page-yourself-the-editor) below.
 - **Remove a wrong box:** tap the middle of the page; each box gets a small **×**. Tap it.
   *Show hidden boxes* in the reading options brings them back.
@@ -267,7 +267,7 @@ series until you switch it off.
 ### Fix a page yourself: the editor
 
 A translation is wrong, a bubble was missed, or a box sits badly? Open the page, tap the middle,
-open the reading options (**☰**) → **Manga Translate** → **Edit this page**. The page opens in the
+open the reading options (**☰**) → **Manga Translate** → **Edit translation**. The page opens in the
 editor: the page with its boxes on one side, the texts on the other. Close it and you're back in
 the reader, with your changes on the page. It needs MangaVibe 2.0.0 or newer, and an admin account.
 
@@ -279,16 +279,33 @@ the reader, with your changes on the page. It needs MangaVibe 2.0.0 or newer, an
 - **Change the look:** select a box, and its card shows **Size** (Auto fits the text to the box; the
   slider sets a size of your own), bold, italic, capital letters, the font, the alignment, and the
   colour of the text and of the box. **Use this look for all boxes** copies it to the whole page.
-- **Text that wasn't found:** press **Scan text** and drag a frame around the Japanese on the page.
-  It is read and translated, and becomes a new box. A close frame around the text reads best.
-- **A box of your own:** press **+ Text box**, drag where it should go, and type.
+- **Text that wasn't found:** press **Scan text** and drag a frame around the Japanese on the page
+  (or hold **Ctrl** and drag). It is read and translated, and becomes a new box. A close frame
+  around the text reads best.
+- **A box of your own:** press **+ Text box**, drag where it should go, and type (or hold **Shift**
+  and click on the page).
 - **Hide or delete:** **Hide** keeps a box but doesn't show it in the reader; **Delete** removes it.
-- **See the page underneath:** **Hide boxes** (the boxes come back with the same button). **−**,
-  **Fit** and **+** change the size of the page.
-- **Undo** takes back the last change (Ctrl+Z). **Save** saves the page (Ctrl+S); going to another
-  page with **‹ ›** saves too. Closing with unsaved changes asks first.
+- **See the page underneath:** **Hide boxes** (the boxes come back with the same button). The
+  magnifying glasses and **Fit** change the size of the page.
+- **Other pages:** the arrows under the page. Going to another page saves the one you leave.
+- **Undo** and **Save** are at the bottom of the texts (Ctrl+Z, Ctrl+S). Closing (the **×** at the
+  top right) with unsaved changes asks first.
 - **Start over:** **Translate this page again** throws away the page's boxes, your changes too, and
   translates it afresh.
+
+**Shortcuts** (the **Shortcuts** button at the top, or **?**, lists them in the editor):
+
+| Keys | What they do |
+|---|---|
+| **+** / **−** / **0** | zoom in / zoom out / fit the page |
+| **H** | hide or show the boxes |
+| **Shift + ←** / **Shift + →** | next / previous page, while no box is selected |
+| **Shift + click** | a new text box at that place |
+| **Ctrl + drag** | scan text: read and translate what is in the frame |
+| **Arrow keys** | move the selected box a little (with Shift: more) |
+| **Delete** | delete the selected box |
+| **Ctrl + Z** / **Ctrl + S** | undo / save |
+| **Esc** | leave a text field or a tool, then close the editor |
 
 Pages you edited are yours: **Translate this chapter again** leaves them as they are and redoes only
 the others. Boxes you edited stay exactly where you put them, and scanning and translating in the
