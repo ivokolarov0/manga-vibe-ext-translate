@@ -19,7 +19,7 @@ Two ways to translate (the "Translation" setting):
     The model also says who speaks each bubble. When a chapter is done, the model updates the notes,
     and the next chapter starts from them. The notes are saved with the chapter's last page.
 
-The editor ("Edit this page" in the reader's options, MangaVibe 2.0.0 or newer) opens the page with
+The editor ("Edit translation" in the reader's options, MangaVibe 2.0.0 or newer) opens the page with
 its boxes: change the text, move and resize boxes, style them, add your own, or mark text the finder
 missed to have it read and translated. It's the plugin's own script and API (the end of this file);
 what it saves is the same per-page data, with a fixed place ("rect") and a "style" per box.
@@ -48,9 +48,9 @@ try:
 except ImportError:  # MangaVibe before it had one, or try_pages.py
     API_VERSION = 0
 HAS_EDITOR = API_VERSION >= 7  # a plugin's own API and script: MangaVibe 2.0.0
-EDIT_LABEL = "Edit this page"  # the reader's button that opens the editor (the script looks for it)
+EDIT_LABEL = "Edit translation"  # the reader's button that opens the editor (the script looks for it)
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 DATA_VERSION = 1          # the format of what is saved per page
 SEND_WIDTH = 1600         # pages are shrunk to this width before they go to the PC
 OFFLINE_RETRY = 15        # seconds between tries while the PC can't be reached
@@ -1474,10 +1474,27 @@ EDITOR_CSS = """
 #mte button.mte-primary { background: var(--mte-accent); border-color: var(--mte-accent); color: var(--accent-text, #1d0d07); font-weight: 600; }
 #mte :focus-visible { outline: 2px solid var(--mte-accent); outline-offset: 1px; }
 .mte-top, .mte-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--mte-line); }
-.mte-title { margin: 0 6px; font-size: 15px; }
-.mte-nav { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.mte-top { padding-left: 14px; }
+.mte-title { font-size: 15px; }
+#mte button svg { display: block; flex: none; }
+#mte button:has(> svg) { display: inline-flex; align-items: center; gap: 6px; }
+#mte button.mte-icon { justify-content: center; width: 32px; padding: 0; }
+#mte .mte-top button { background: transparent; border-color: transparent; }
+#mte .mte-top button:hover { background: var(--mte-card); }
+.mte-pages {
+  display: flex; align-items: center; justify-content: center; gap: 10px; padding: 6px 10px;
+  border-top: 1px solid var(--mte-line); font-variant-numeric: tabular-nums;
+}
+.mte-ask > .mte-keys { width: 100%; max-width: 460px; max-height: 100%; overflow: auto; }
+.mte-keys table { width: 100%; border-collapse: collapse; }
+.mte-keys th { padding: 12px 0 4px; color: #979eab; font-size: 12px; font-weight: 600; text-align: left; }
+.mte-keys td { padding: 4px 0; vertical-align: top; }
+.mte-keys td:first-child { padding-right: 14px; white-space: nowrap; }
+.mte-keys kbd {
+  display: inline-block; min-width: 22px; padding: 1px 6px; border: 1px solid #3a4050; border-bottom-width: 2px;
+  border-radius: 6px; background: #0d0e11; font: 12px/18px system-ui, sans-serif; text-align: center;
+}
 .mte-space { flex: 1; }
-.mte-dirty { color: var(--mte-accent); font-size: 12px; }
 .mte-main { flex: 1; display: flex; min-height: 0; }
 .mte-work { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .mte-hint { padding: 5px 12px; color: #979eab; font-size: 12px; }
@@ -1557,14 +1574,15 @@ EDITOR_CSS = """
 #mte button.mte-sw.on { box-shadow: 0 0 0 2px var(--mte-accent); }
 /* "no background": stripes (over the colour the button gets in its style attribute) */
 #mte button.mte-sw[data-v="none"] { background: repeating-linear-gradient(45deg, #777 0 4px, #222 4px 8px) !important; }
-.mte-foot { display: flex; gap: 6px; padding: 10px; border-top: 1px solid var(--mte-line); }
+.mte-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 10px; border-top: 1px solid var(--mte-line); }
 .mte-ask { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, .6); }
 .mte-ask > div { max-width: 360px; padding: 16px; border: 1px solid var(--mte-line); border-radius: 12px; background: var(--mte-card); }
 .mte-ask p { margin: 0 0 12px; }
 @media (max-width: 820px) {
   .mte-main { flex-direction: column; }
   .mte-side { width: auto; height: 46%; border-left: 0; border-top: 1px solid var(--mte-line); }
-  .mte-hint, .mte-title { display: none; }
+  .mte-hint { display: none; }
+  .mte-pages { padding: 4px 8px; }
   .mte-stage { padding: 8px; }
   .mte-top, .mte-tools { padding: 6px 8px; }
 }
@@ -1572,7 +1590,7 @@ EDITOR_CSS = """
 
 
 # --- the editor: its script ---------------------------------------------------------------------------
-# Runs in the web app (Plugin.js). From the reader it needs three things: its "Edit this page" button
+# Runs in the web app (Plugin.js). From the reader it needs three things: its "Edit translation" button
 # (to open instead of asking the server), the page being read, and the changed boxes drawn again.
 # MangaVibe with plugin API 12 gives all three (the "book-action" event and MangaVibe.reader); on
 # older ones the script finds them in the reader's markup.
@@ -1585,8 +1603,40 @@ window.__mangaTranslateEditor = true;
 
 const PID = "manga-translate", LABEL = "__EDIT_LABEL__", API = `/api/plugins/${PID}/api`;
 const MIN = 0.012;  // smallest box side, as a fraction of the page
+const svg = (body) => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`;
+const ICON = {
+  close: svg(`<path d="M6 6l12 12M18 6L6 18"/>`),
+  plus: svg(`<circle cx="11" cy="11" r="7"/><path d="M21 21l-5-5M8 11h6M11 8v6"/>`),
+  minus: svg(`<circle cx="11" cy="11" r="7"/><path d="M21 21l-5-5M8 11h6"/>`),
+  left: svg(`<path d="M15 6l-6 6 6 6"/>`),
+  right: svg(`<path d="M9 6l6 6-6 6"/>`),
+  keys: svg(`<rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/>`),
+};
+/* the shortcuts window: [keys, what they do], or [heading]. In keys, words are keys; + / or stay as they are */
+const SHORTCUTS = [
+  ["The page"],
+  ["+", "Zoom in"],
+  ["−", "Zoom out"],
+  ["0", "Fit the page to the space"],
+  ["H", "Hide or show the boxes"],
+  ["Shift + ←", "Next page (while no box is selected)"],
+  ["Shift + →", "Previous page (while no box is selected)"],
+  ["Boxes"],
+  ["Shift + click", "A new text box at that place (drag for its size)"],
+  ["Ctrl + drag", "Scan text: read and translate what is in the frame"],
+  ["← → ↑ ↓", "Move the selected box a little"],
+  ["Shift + ← → ↑ ↓", "Move the selected box more"],
+  ["Delete", "Delete the selected box"],
+  ["Double-click", "Edit the box's translation"],
+  ["Editing"],
+  ["Ctrl + Z", "Undo"],
+  ["Ctrl + S", "Save"],
+  ["Esc", "Leave a text field or a tool, then close the editor"],
+  ["?", "This list"],
+];
 const HINTS = {
-  move: "Click a box to edit it. Drag it to move it, drag its handles to resize it.",
+  move: "Click a box to edit it. Drag it to move it, drag its handles to resize it. Shift + click adds a text box, Ctrl + drag scans text.",
   text: "Drag on the page to draw a text box of your own.",
   scan: "Drag around Japanese text on the page: it is read and translated.",
 };
@@ -1602,7 +1652,7 @@ const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 const pct = (v) => `${(v * 100).toFixed(3)}%`;
 const q = (sel) => E.root.querySelector(sel);
 
-/* ---------------- opening: the reader's "Edit this page" button ----------------
+/* ---------------- opening: the reader's "Edit translation" button ----------------
    MangaVibe with plugin API 12 hands the button to this script (the "book-action" event) and says
    what is being read (MangaVibe.reader). Older ones (2.0.0 on) have neither: there the script takes
    the click on the button itself and reads the page from the reader's markup. */
@@ -1650,7 +1700,7 @@ async function open(at) {
   if (!at) return toast("Open a book in the reader first", "error");
   build();
   Object.assign(E, { info: null, blocks: [], sel: -1, dirty: false, changed: false, undo: [], zoom: 1, pending: [] });
-  q(".mte-ask").hidden = true;
+  q('[data-r="ask"]').hidden = q('[data-r="keys"]').hidden = true;
   E.root.hidden = false;
   await load(at.book, at.page);
 }
@@ -1664,41 +1714,52 @@ function build() {
   root.setAttribute("aria-label", "Edit the translation");
   root.innerHTML = `
     <div class="mte-top">
-      <button data-a="close" title="Close the editor (Esc)">✕ Close</button>
       <b class="mte-title">Edit translation</b>
-      <span class="mte-nav"><button data-a="prev" title="Previous page" aria-label="Previous page">‹</button>
-        <span data-r="pageno"></span>
-        <button data-a="next" title="Next page" aria-label="Next page">›</button></span>
       <span class="mte-space"></span>
-      <span class="mte-dirty" data-r="dirty" hidden>Not saved</span>
-      <button data-a="undo" title="Undo (Ctrl+Z)">Undo</button>
-      <button data-a="save" class="mte-primary" title="Save (Ctrl+S)">Save</button>
+      <button data-a="keys" title="Keyboard and mouse shortcuts (?)">${ICON.keys}<span>Shortcuts</span></button>
+      <button data-a="close" class="mte-icon" title="Close the editor (Esc)" aria-label="Close the editor">${ICON.close}</button>
     </div>
     <div class="mte-main">
       <section class="mte-work">
         <div class="mte-tools">
           <button data-tool="move">Move</button>
-          <button data-tool="text" title="Draw a text box of your own">+ Text box</button>
-          <button data-tool="scan" title="Mark text that wasn't found: it is read and translated">Scan text</button>
+          <button data-tool="text" title="Draw a text box of your own (or Shift + click on the page)">+ Text box</button>
+          <button data-tool="scan" title="Mark text that wasn't found: it is read and translated (or Ctrl + drag on the page)">Scan text</button>
           <span class="mte-space"></span>
-          <button data-a="boxes" title="See the page without the boxes">Hide boxes</button>
-          <button data-a="zoomout" title="Smaller" aria-label="Zoom out">−</button>
-          <button data-a="fit">Fit</button>
-          <button data-a="zoomin" title="Larger" aria-label="Zoom in">+</button>
+          <button data-a="boxes" title="See the page without the boxes (H)">Hide boxes</button>
+          <button data-a="zoomout" class="mte-icon" title="Zoom out (−)" aria-label="Zoom out">${ICON.minus}</button>
+          <button data-a="fit" title="Fit the page to the space (0)">Fit</button>
+          <button data-a="zoomin" class="mte-icon" title="Zoom in (+)" aria-label="Zoom in">${ICON.plus}</button>
         </div>
         <div class="mte-hint" data-r="hint"></div>
         <div class="mte-stage"><div class="mte-page"><img alt="The page"><div class="mte-layer"></div></div></div>
+        <div class="mte-pages">
+          <button data-a="prev" class="mte-icon" title="Previous page (Shift + →)" aria-label="Previous page">${ICON.left}</button>
+          <span data-r="pageno"></span>
+          <button data-a="next" class="mte-icon" title="Next page (Shift + ←)" aria-label="Next page">${ICON.right}</button>
+        </div>
       </section>
       <aside class="mte-side" aria-label="The texts of this page">
         <div class="mte-notice" data-r="notice" hidden></div>
         <div class="mte-list" data-r="list"></div>
-        <div class="mte-foot"><button data-a="reset" title="Throw away this page's translation and your changes to it, and translate it again">Translate this page again</button></div>
+        <div class="mte-foot">
+          <button data-a="reset" title="Throw away this page's translation and your changes to it, and translate it again">Translate this page again</button>
+          <span class="mte-space"></span>
+          <button data-a="undo" title="Undo (Ctrl+Z)">Undo</button>
+          <button data-a="save" class="mte-primary" title="Save (Ctrl+S)">Save</button>
+        </div>
       </aside>
     </div>
-    <div class="mte-ask" hidden><div role="alertdialog" aria-label="Unsaved changes">
+    <div class="mte-ask" data-r="ask" hidden><div role="alertdialog" aria-label="Unsaved changes">
       <p>This page has changes that aren't saved.</p>
       <div class="mte-row"><button data-a="saveclose" class="mte-primary">Save and close</button>
         <button data-a="discard">Discard</button><button data-a="stay">Keep editing</button></div>
+    </div></div>
+    <div class="mte-ask" data-r="keys" hidden><div class="mte-keys" role="dialog" aria-label="Shortcuts">
+      <div class="mte-head"><b>Shortcuts</b><span class="mte-space"></span>
+        <button data-a="keys" class="mte-icon" title="Close (Esc)" aria-label="Close">${ICON.close}</button></div>
+      <table>${SHORTCUTS.map(([keys, what]) => !what ? `<tr><th colspan="2">${keys}</th></tr>`
+        : `<tr><td>${keys.split(" ").map((k, n, all) => (k === "+" && all.length > 1 ? k : `<kbd>${k}</kbd>`)).join(" ")}</td><td>${what}</td></tr>`).join("")}</table>
     </div></div>`;
   document.body.append(root);
   E.layer = q(".mte-layer");
@@ -1844,8 +1905,7 @@ function top() {
   q('[data-a="prev"]').disabled = E.page <= 0;
   q('[data-a="next"]').disabled = E.page >= E.pages - 1;
   q('[data-a="undo"]').disabled = !E.undo.length;
-  q('[data-a="save"]').disabled = !E.dirty;
-  q('[data-r="dirty"]').hidden = !E.dirty;
+  q('[data-a="save"]').disabled = !E.dirty;  // lit up: there is something to save
   q('[data-r="hint"]').textContent = HINTS[E.tool];
   for (const b of E.root.querySelectorAll("[data-tool]")) b.classList.toggle("on", b.dataset.tool === E.tool);
   E.layer.classList.toggle("mte-draw", E.tool !== "move");
@@ -2102,6 +2162,11 @@ const actions = {
     const off = E.layer.classList.toggle("mte-off");
     q('[data-a="boxes"]').textContent = off ? "Show boxes" : "Hide boxes";
   },
+  keys() {
+    const el = q('[data-r="keys"]');
+    el.hidden = !el.hidden;
+    if (!el.hidden) el.querySelector("button").focus();
+  },
   zoomin: () => { E.zoom = Math.min(4, E.zoom * 1.25); layout(); },
   zoomout: () => { E.zoom = Math.max(0.5, E.zoom / 1.25); layout(); },
   fit: () => { E.zoom = 1; layout(); },
@@ -2164,11 +2229,13 @@ const rectOf = (a, b) => ({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Mat
 function onDown(e) {
   if (e.button || E.drag) return;
   const handle = e.target.closest(".mte-h"), el = e.target.closest(".mte-box"), start = point(e);
-  if (E.tool !== "move") {
+  // without picking a tool first: Shift + click (or drag) is a text box, Ctrl + drag scans text
+  const tool = E.tool !== "move" ? E.tool : e.shiftKey ? "text" : e.ctrlKey || e.metaKey ? "scan" : "";
+  if (tool) {
     const rubber = document.createElement("div");
     rubber.className = "mte-rubber";
     E.layer.append(rubber);
-    E.drag = { kind: "draw", start, rubber };
+    E.drag = { kind: "draw", start, rubber, tool };
   } else if (handle) {
     E.drag = { kind: "size", i: E.sel, h: handle.dataset.h, start, from: { ...E.blocks[E.sel] }, before: snap() };
   } else if (el) {
@@ -2213,11 +2280,17 @@ function onUp(e) {
   E.drag = null;
   if (d.kind !== "draw") return pushUndo(d.before);
   d.rubber.remove();
-  const r = rectOf(d.start, point(e)), tool = E.tool;
+  let r = rectOf(d.start, point(e));
   E.tool = "move";
   top();
-  if (e.type === "pointercancel" || r.w < MIN || r.h < MIN) return;
-  if (tool === "text") addText(r); else addScan(r);
+  if (e.type === "pointercancel") return;
+  if (r.w < MIN || r.h < MIN) {
+    if (d.tool !== "text") return;
+    // a click, not a drag: a text box of a usual size around that place
+    const w = 0.2, h = 0.07;
+    r = { x: clamp(d.start.x - w / 2, 0, 1 - w), y: clamp(d.start.y - h / 2, 0, 1 - h), w, h };
+  }
+  if (d.tool === "text") addText(r); else addScan(r);
 }
 
 function addBlock(r, src, text, box) {
@@ -2255,11 +2328,14 @@ async function addScan(r) {
 window.addEventListener("keydown", (e) => {
   if (!E.root || E.root.hidden) return;
   e.stopPropagation();  // not the reader's (arrows turn its pages, Escape leaves it)
-  const typing = /^(TEXTAREA|INPUT|SELECT)$/.test(e.target.tagName || "");
+  const slider = e.target.type === "range";  // takes the arrow keys itself, nothing else
+  const typing = !slider && /^(TEXTAREA|INPUT|SELECT)$/.test(e.target.tagName || "");
   const ctrl = e.ctrlKey || e.metaKey, key = e.key.toLowerCase();
+  const ask = q('[data-r="ask"]'), keys = q('[data-r="keys"]');
   if (e.key === "Escape") {
     e.preventDefault();
-    if (!q(".mte-ask").hidden) q(".mte-ask").hidden = true;
+    if (!keys.hidden) keys.hidden = true;
+    else if (!ask.hidden) ask.hidden = true;
     else if (E.tool !== "move") { E.tool = "move"; top(); }
     else if (typing) e.target.blur();
     else close();
@@ -2270,7 +2346,14 @@ window.addEventListener("keydown", (e) => {
   } else if (ctrl && key === "z" && !typing) {
     e.preventDefault();
     undo();
-  } else if (!typing && !ctrl && E.blocks[E.sel]) {
+  } else if (typing || ctrl || e.altKey || !ask.hidden) {
+    // typing, the browser's own shortcuts, or the question about unsaved changes: no hotkeys
+  } else if (HOTKEYS[key]) {
+    e.preventDefault();
+    actions[HOTKEYS[key]]();
+  } else if (!keys.hidden || slider) {
+    // the shortcuts list is up, or a slider has the arrow keys
+  } else if (E.blocks[E.sel]) {
     const b = E.blocks[E.sel], step = e.shiftKey ? 0.01 : 0.002;
     const by = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
     if (by) {
@@ -2281,8 +2364,15 @@ window.addEventListener("keydown", (e) => {
       e.preventDefault();
       cardActions.del(E.sel);
     }
+  } else if (e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    // no box selected: the pages, in the direction a manga is read (the next page is to the left)
+    e.preventDefault();
+    go(e.key === "ArrowLeft" ? 1 : -1);
   }
 }, true);
+
+/* keys that work whenever nothing is being typed -> what they do (in `actions`) */
+const HOTKEYS = { "+": "zoomin", "=": "zoomin", "-": "zoomout", "_": "zoomout", "0": "fit", "h": "boxes", "?": "keys" };
 
 /* the reader was left under the editor (the back button): nothing to edit any more */
 window.addEventListener("hashchange", () => {
