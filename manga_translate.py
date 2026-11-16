@@ -50,7 +50,7 @@ except ImportError:  # MangaVibe before it had one, or try_pages.py
 HAS_EDITOR = API_VERSION >= 7  # a plugin's own API and script: MangaVibe 2.0.0
 EDIT_LABEL = "Edit translation"  # the reader's button that opens the editor (the script looks for it)
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 DATA_VERSION = 1          # the format of what is saved per page
 SEND_WIDTH = 1600         # pages are shrunk to this width before they go to the PC
 OFFLINE_RETRY = 15        # seconds between tries while the PC can't be reached
@@ -1391,6 +1391,28 @@ def scan_area(ctx, book, page, corners, translate=True, background=()) -> dict:
     return {"src": src, "text": translate_one(ctx, src, background) if translate and src else ""}
 
 
+def romaji_of(ctx, texts) -> list:
+    """How Japanese texts are said, in Latin letters, for an owner who can't read the characters:
+    the vision server (1.2.0 or newer) works it out. One answer per text."""
+    vision = _url(ctx.setting("vision_url"))
+    if not vision:
+        raise EditError("Set the vision server's address in Settings → Plugins first")
+    if not isinstance(texts, list) or len(texts) > MAX_BLOCKS:
+        raise EditError("That isn't a list of texts")
+    texts = [str(t or "")[:MAX_TEXT] for t in texts]
+
+    def ask():
+        r = httpx.post(vision + "/romaji", json={"texts": texts}, timeout=30)
+        if r.status_code == 404:  # a vision server from before it could
+            raise EditError("Romaji needs the vision server 1.2.0 or newer: download the plugin's ZIP again "
+                            "and restart the server", 501)
+        if r.status_code == 501:
+            raise EditError("The vision server can't make romaji on that computer (see its window)", 501)
+        r.raise_for_status()
+        return r.json()["romaji"]
+    return _asked(ctx, "vision server", vision, ask)
+
+
 def reset_page(ctx, book, page) -> dict:
     """Forgets a page's translation (the owner's changes too) and puts it at the front of the queue."""
     if not ctx.setting("vision_url") or not ctx.setting("llm_url"):
@@ -1447,6 +1469,13 @@ def make_router():
     def post_translate(body: dict = Body(...), ctx=Depends(plugin_ctx)):
         try:
             return {"text": translate_one(ctx, body.get("src"), body.get("background") or [])}
+        except EditError as e:
+            raise HTTPException(e.status, str(e)) from None
+
+    @router.post("/romaji")
+    def post_romaji(body: dict = Body(...), ctx=Depends(plugin_ctx)):
+        try:
+            return {"romaji": romaji_of(ctx, body.get("texts"))}
         except EditError as e:
             raise HTTPException(e.status, str(e)) from None
 
@@ -1566,6 +1595,8 @@ EDITOR_CSS = """
   color: #eceef2; font-size: 14px;
 }
 #mte textarea { resize: vertical; }
+.mte-romaji { margin-top: 4px; padding: 0 2px; color: #c9cfda; font-size: 13px; font-style: italic; user-select: text; }
+.mte-romaji.mte-none { font-style: normal; font-size: 12px; }
 .mte-style { margin-top: 10px; padding-top: 4px; border-top: 1px solid var(--mte-line); }
 .mte-lab { width: 44px; color: #979eab; font-size: 12px; }
 .mte-style input[type="range"] { flex: 1; min-width: 80px; accent-color: var(--mte-accent); }
@@ -1620,8 +1651,8 @@ const SHORTCUTS = [
   ["−", "Zoom out"],
   ["0", "Fit the page to the space"],
   ["H", "Hide or show the boxes"],
-  ["Shift + ←", "Next page (while no box is selected)"],
-  ["Shift + →", "Previous page (while no box is selected)"],
+  ["Shift + →", "Next page (while no box is selected)"],
+  ["Shift + ←", "Previous page (while no box is selected)"],
   ["Boxes"],
   ["Shift + click", "A new text box at that place (drag for its size)"],
   ["Ctrl + drag", "Scan text: read and translate what is in the frame"],
@@ -1641,7 +1672,8 @@ const HINTS = {
   scan: "Drag around Japanese text on the page: it is read and translated.",
 };
 const E = { root: null, book: 0, page: 0, pages: 0, info: null, blocks: [], sel: -1, tool: "move",
-  dirty: false, changed: false, undo: [], zoom: 1, drag: null, poll: 0, pending: [], focusSnap: null };
+  dirty: false, changed: false, undo: [], zoom: 1, drag: null, poll: 0, pending: [], focusSnap: null,
+  romaji: new Map(), romajiNote: "", romajiBusy: false, romajiTimer: 0 };
 const busy = new WeakSet();  // blocks waiting for the PC ("Read again", "Translate")
 
 const api = (path, opts) => MangaVibe.api(API + path, opts);
@@ -1699,7 +1731,8 @@ function where() {
 async function open(at) {
   if (!at) return toast("Open a book in the reader first", "error");
   build();
-  Object.assign(E, { info: null, blocks: [], sel: -1, dirty: false, changed: false, undo: [], zoom: 1, pending: [] });
+  Object.assign(E, { info: null, blocks: [], sel: -1, dirty: false, changed: false, undo: [], zoom: 1, pending: [],
+    romajiNote: "" });
   q('[data-r="ask"]').hidden = q('[data-r="keys"]').hidden = true;
   E.root.hidden = false;
   await load(at.book, at.page);
@@ -1734,9 +1767,9 @@ function build() {
         <div class="mte-hint" data-r="hint"></div>
         <div class="mte-stage"><div class="mte-page"><img alt="The page"><div class="mte-layer"></div></div></div>
         <div class="mte-pages">
-          <button data-a="prev" class="mte-icon" title="Previous page (Shift + →)" aria-label="Previous page">${ICON.left}</button>
+          <button data-a="prev" class="mte-icon" title="Previous page (Shift + ←)" aria-label="Previous page">${ICON.left}</button>
           <span data-r="pageno"></span>
-          <button data-a="next" class="mte-icon" title="Next page (Shift + ←)" aria-label="Next page">${ICON.right}</button>
+          <button data-a="next" class="mte-icon" title="Next page (Shift + →)" aria-label="Next page">${ICON.right}</button>
         </div>
       </section>
       <aside class="mte-side" aria-label="The texts of this page">
@@ -2019,6 +2052,36 @@ function renderList() {
     ? `<p class="mte-none">No text boxes on this page. “Scan text” reads a bubble you mark; “+ Text box” adds one you write yourself.</p>` : "");
   styleRow();
   E.list.scrollTop = scrolled;
+  romanize();
+}
+
+/* ---------------- romaji: how the Japanese is said, under each Japanese text ----------------
+   For an owner who can't read the characters. The vision server works it out; what it said is
+   remembered per text, so a text is only asked for once. */
+
+function romajiLines() {
+  for (const el of E.list.querySelectorAll('[data-r="romaji"]')) {
+    const src = (E.blocks[cardIndex(el)]?.src || "").trim();
+    const text = !src ? "" : E.romaji.get(src) ?? (E.romajiNote || "…");
+    el.textContent = text;
+    el.hidden = !text;
+    el.classList.toggle("mte-none", !E.romaji.has(src));
+  }
+}
+
+async function romanize() {
+  romajiLines();
+  const texts = [...new Set(E.blocks.map((b) => (b.src || "").trim()).filter((s) => s && !E.romaji.has(s)))];
+  if (!texts.length || E.romajiBusy || E.romajiNote) return;
+  E.romajiBusy = true;
+  try {
+    const answer = await api("/romaji", { method: "POST", body: { texts } });
+    texts.forEach((s, n) => E.romaji.set(s, answer.romaji[n] || ""));
+  } catch (e) {
+    E.romajiNote = e.message;  // e.g. an older vision server: said once in each line, not asked again
+  }
+  E.romajiBusy = false;
+  romanize();  // the lines, and texts typed or read meanwhile
 }
 
 function card(b, i) {
@@ -2030,6 +2093,7 @@ function card(b, i) {
       <button data-c="del" title="Delete this box">Delete</button></div>
     <label>Japanese (as read)
       <textarea data-f="src" rows="2" lang="ja" spellcheck="false">${esc(b.src)}</textarea></label>
+    <div class="mte-romaji" data-r="romaji" title="How the Japanese is said (romaji)" hidden></div>
     <div class="mte-row">
       <button data-c="ocr" ${wait ? "disabled" : ""} title="Read the Japanese in this box's place again">Read again</button>
       <button data-c="tr" ${wait || !b.src.trim() ? "disabled" : ""} title="Translate the Japanese above again">${wait ? "Working…" : "Translate"}</button></div>
@@ -2112,6 +2176,9 @@ function onInput(e) {
     if (f === "src") {
       const tr = e.target.closest(".mte-card").querySelector('[data-c="tr"]');
       if (!busy.has(b)) tr.disabled = !b.src.trim();
+      romajiLines();
+      clearTimeout(E.romajiTimer);
+      E.romajiTimer = setTimeout(romanize, 500);  // once the typing pauses
     }
   }
   E.dirty = true;
@@ -2365,9 +2432,9 @@ window.addEventListener("keydown", (e) => {
       cardActions.del(E.sel);
     }
   } else if (e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
-    // no box selected: the pages, in the direction a manga is read (the next page is to the left)
+    // no box selected: the pages, like the arrows under the page (right is the next one)
     e.preventDefault();
-    go(e.key === "ArrowLeft" ? 1 : -1);
+    go(e.key === "ArrowRight" ? 1 : -1);
   }
 }, true);
 
