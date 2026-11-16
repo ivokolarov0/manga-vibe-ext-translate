@@ -18,6 +18,11 @@ Two ways to translate (the "Translation" setting):
     characters and the story so far, the two pages before (with who said what) and the page after.
     The model also says who speaks each bubble. When a chapter is done, the model updates the notes,
     and the next chapter starts from them. The notes are saved with the chapter's last page.
+
+The editor ("Edit this page" in the reader's options, MangaVibe 2.0.0 or newer) opens the page with
+its boxes: change the text, move and resize boxes, style them, add your own, or mark text the finder
+missed to have it read and translated. It's the plugin's own script and API (the end of this file);
+what it saves is the same per-page data, with a fixed place ("rect") and a "style" per box.
 """
 import base64
 import heapq
@@ -38,7 +43,14 @@ from app.plugins import Action, Box, Overlay, Plugin, SettingDef
 # versions don't, and then the notes are saved with each chapter's last page instead
 HAS_NOTE = "note" in getattr(Overlay, "__dataclass_fields__", {})
 
-VERSION = "0.4.0"
+try:
+    from app.plugins import API_VERSION
+except ImportError:  # MangaVibe before it had one, or try_pages.py
+    API_VERSION = 0
+HAS_EDITOR = API_VERSION >= 7  # a plugin's own API and script: MangaVibe 2.0.0
+EDIT_LABEL = "Edit this page"  # the reader's button that opens the editor (the script looks for it)
+
+VERSION = "0.5.0"
 DATA_VERSION = 1          # the format of what is saved per page
 SEND_WIDTH = 1600         # pages are shrunk to this width before they go to the PC
 OFFLINE_RETRY = 15        # seconds between tries while the PC can't be reached
@@ -106,17 +118,21 @@ class MangaTranslate(Plugin):
     actions = [Action("series", "Translate the whole series"),
                Action("forget", "Forget this series' translations",
                       confirm="Delete the saved translations of every book in this series?")]
-    book_actions = [Action("chapter", "Translate this chapter"),
-                    Action("again", "Translate this chapter again")]
+    book_actions = ([Action("edit", EDIT_LABEL)] if HAS_EDITOR else []) + [
+        Action("chapter", "Translate this chapter"),
+        Action("again", "Translate this chapter again")]
+    # the editor's API, script and styles are added at the end of this file (router, js, css)
     css = """
 .ov-box.ov-manga-translate { border-radius: 14px; box-shadow: 0 0 0 2px #fff; }
+.ov-box.ov-manga-translate > span { white-space: pre-line; }  /* line breaks typed in the editor */
 .ov-box.mt-bg-75 { background: rgba(255, 255, 255, .75); box-shadow: 0 0 0 2px rgba(255, 255, 255, .75); }
 .ov-box.mt-bg-50 { background: rgba(255, 255, 255, .5); box-shadow: 0 0 0 2px rgba(255, 255, 255, .5); }
 .ov-box.mt-bg-25 { background: rgba(255, 255, 255, .25); box-shadow: 0 0 0 2px rgba(255, 255, 255, .25); }
 .ov-box.mt-bg-0 { background: transparent; box-shadow: none; }
 .ov-box.mt-outline span {
-  -webkit-text-stroke: .16em #fff; paint-order: stroke fill;  /* stroke drawn under the letters */
-  text-shadow: 0 0 .12em #fff, 0 0 .12em #fff;                /* halo where paint-order isn't supported */
+  /* --mt-stroke: dark for boxes with light text (the editor's text colours) */
+  -webkit-text-stroke: .16em var(--mt-stroke, #fff); paint-order: stroke fill;  /* stroke drawn under the letters */
+  text-shadow: 0 0 .12em var(--mt-stroke, #fff), 0 0 .12em var(--mt-stroke, #fff);  /* halo where paint-order isn't supported */
 }
 .ov-box.mt-failed { background: rgba(0, 0, 0, .55); color: #fff; border-radius: 6px; }
 """
@@ -188,14 +204,24 @@ class MangaTranslate(Plugin):
         return out
 
     def run_book_action(self, ctx, key, book):
+        if key == "edit":  # the plugin's script opens the editor instead; this only runs if it didn't
+            return "The editor didn't open. Reload the page and try again."
+        kept = 0
         if key == "again":
-            ctx.clear_page_data(book)
+            # pages changed by hand in the editor stay: redoing them would throw that work away
+            # (the editor's "Translate this page again" redoes one)
+            for p, data in ctx.page_data(book).items():
+                if data.get("edited"):
+                    kept += 1
+                else:
+                    ctx.set_page_data(book, p, None)
             self.ocr_forget(book.id)  # a changed Bubble detection must take effect
             save_notes(ctx, book, None)
         saved = ctx.page_data(book)
         todo = [p for p in range(book.page_count) if p not in saved]
         self.enqueue(ctx, book.id, todo, CHAPTER)
-        return f"Translating {len(todo)} pages" if todo else "This chapter is already translated"
+        note = f" ({kept} you edited {'was' if kept == 1 else 'were'} kept)" if kept else ""
+        return f"Translating {len(todo)} pages{note}" if todo else f"This chapter is already translated{note}"
 
     def run_action(self, ctx, key, series):
         books = (ctx.db.query(Book).filter(Book.series_id == series.id, Book.hidden.is_(False),
@@ -389,6 +415,9 @@ class MangaTranslate(Plugin):
             if data is None:
                 continue
             self.offline = ""
+            if (ctx.get_page_data(book, page) or {}).get("edited"):  # saved in the editor meanwhile: that wins
+                self.release(key)
+                continue
             ctx.set_page_data(book, page, data)
             ctx.db.commit()  # the reader shows it at its next look
             self.tries.pop(key, None)
@@ -628,7 +657,7 @@ def translate_page(ctx, book, page, result, cached_ocr=lambda key: None, picture
     previous = []
     if page > 0:
         before = ctx.get_page_data(book, page - 1) or {}
-        previous = [b["src"] for b in before.get("blocks", [])][-8:]
+        previous = [b["src"] for b in before.get("blocks", []) if b["src"]][-8:]  # not the editor's own boxes
     return translate_blocks(ctx, result, page + 1, previous, context, picture)
 
 
@@ -1013,24 +1042,38 @@ def boxes_for(data, cls=""):
     than a column of Japanese, and the bubble around it is bigger anyway. Tall thin boxes (vertical
     Japanese) are widened to at least 2/3 of their height, so English lines aren't one word each.
     A box never grows into a neighbour: where two would overlap, both grow less on the sides that
-    face each other."""
+    face each other. A box placed in the editor ("rect") stays exactly there, with its "style" as
+    CSS classes; one whose text was emptied there isn't drawn."""
+    w, h = data["w"], data["h"]
+    out = []
+    for b, (x1, y1, x2, y2) in zip(data.get("blocks", []), display_rects(data)):
+        if not b["text"]:
+            continue
+        who, src = b.get("who", ""), b["src"]
+        title = f"{who}: {src}" if who and src else src or who
+        classes = " ".join(c for c in (cls, style_classes(b.get("style"))) if c)
+        out.append(Box(x1 / w, y1 / h, (x2 - x1) / w, (y2 - y1) / h, text=b["text"], title=title, cls=classes))
+    return out
+
+
+def display_rects(data) -> list:
+    """Where each block's English box goes: [x1, y1, x2, y2] per block, in pixels of the saved page
+    size (see boxes_for)."""
     w, h = data["w"], data["h"]
     blocks = data.get("blocks", [])
-    rects = [b["box"] for b in blocks]
+    rects = [b.get("rect") or b["box"] for b in blocks]
     grow = []  # per box: how far each side moves out [left, top, right, bottom]
-    for x1, y1, x2, y2 in rects:
+    for b, (x1, y1, x2, y2) in zip(blocks, rects):
+        if b.get("rect"):  # placed by hand
+            grow.append([0, 0, 0, 0])
+            continue
         gx = max((x2 - x1) * 0.25, ((y2 - y1) * 0.66 - (x2 - x1)) / 2)
         gy = (y2 - y1) * 0.08
         grow.append([min(gx, x1), min(gy, y1), min(gx, w - x2), min(gy, h - y2)])
     for i in range(len(rects)):
         for j in range(i + 1, len(rects)):
             _make_room(rects[i], grow[i], rects[j], grow[j])
-    out = []
-    for b, (x1, y1, x2, y2), (gl, gt, gr, gb) in zip(blocks, rects, grow):
-        x1, y1, x2, y2 = x1 - gl, y1 - gt, x2 + gr, y2 + gb
-        title = f"{b['who']}: {b['src']}" if b.get("who") else b["src"]
-        out.append(Box(x1 / w, y1 / h, (x2 - x1) / w, (y2 - y1) / h, text=b["text"], title=title, cls=cls))
-    return out
+    return [[x1 - gl, y1 - gt, x2 + gr, y2 + gb] for (x1, y1, x2, y2), (gl, gt, gr, gb) in zip(rects, grow)]
 
 
 def _make_room(a, ga, b, gb):
@@ -1084,3 +1127,1176 @@ def test_connection(ctx) -> str:
         return (f"{found[0]} · LLM server OK, model '{model}' found. Note: '{model}' can't do full context, "
                 "so pages are translated page by page. For full context use a model like gemma4.")
     return f"{found[0]} · LLM server OK, model '{model}' found"
+
+
+# --- the editor: box styles ---------------------------------------------------------------------------
+# A box's "style" is saved with its block and reaches the reader as CSS classes (a Box only has
+# `cls`): {"size": 24, "bold": True, "italic": True, "upper": True, "font", "align", "color", "bg"}.
+# "size" is the font size in tenths of a percent of the page's width, so it's the same at every zoom;
+# without it the reader fits the text to the box, as before.
+
+SIZE_MIN, SIZE_MAX = 6, 80
+FONTS = [("", "Comic (default)", ""),
+         ("sans", "Plain", 'system-ui, "Segoe UI", Arial, sans-serif'),
+         ("serif", "Serif", 'Georgia, "Times New Roman", serif'),
+         ("hand", "Handwriting", '"Segoe Print", "Bradley Hand", "Comic Sans MS", cursive'),
+         ("heavy", "Heavy", 'Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif'),
+         ("mono", "Typewriter", '"Courier New", ui-monospace, monospace')]
+ALIGNS = [("", "Centre"), ("left", "Left"), ("right", "Right")]
+COLORS = [("", "Black", "#111"), ("white", "White", "#fff"), ("red", "Red", "#c62828"),
+          ("blue", "Blue", "#1e50c8"), ("green", "Green", "#1b7a3d"), ("purple", "Purple", "#7b2fbf"),
+          ("orange", "Orange", "#c85a00"), ("gray", "Grey", "#6b7280")]
+BACKGROUNDS = [("", "White", "#fff"), ("black", "Black", "#111"), ("yellow", "Yellow", "#fff2a8"),
+               ("pink", "Pink", "#ffd9e6"), ("blue", "Blue", "#d9ecff"), ("none", "None", "transparent")]
+STYLE_CHOICES = {"font": FONTS, "align": ALIGNS, "color": COLORS, "bg": BACKGROUNDS}
+STYLE_PREFIX = {"font": "mt-f-", "align": "mt-al-", "color": "mt-c-", "bg": "mt-k-"}
+STYLE_FLAGS = {"bold": "mt-b", "italic": "mt-i", "upper": "mt-u"}
+
+
+def clean_style(style) -> dict:
+    """A style as it's saved: only what is known, nothing for the defaults."""
+    if not isinstance(style, dict):
+        return {}
+    out = {}
+    try:
+        size = int(style.get("size") or 0)
+    except (TypeError, ValueError):
+        size = 0
+    if size:
+        out["size"] = min(max(size, SIZE_MIN), SIZE_MAX)
+    for key in STYLE_FLAGS:
+        if style.get(key) is True:
+            out[key] = True
+    for key, options in STYLE_CHOICES.items():
+        if style.get(key) and style[key] in {o[0] for o in options}:
+            out[key] = style[key]
+    return out
+
+
+def style_classes(style) -> str:
+    """A saved style as CSS classes (style_css() has the rules; the editor's script does the same)."""
+    style = clean_style(style)
+    out = [f"mt-fs-{style['size']}"] if style.get("size") else []
+    out += [cls for key, cls in STYLE_FLAGS.items() if style.get(key)]
+    out += [prefix + style[key] for key, prefix in STYLE_PREFIX.items() if style.get(key)]
+    return " ".join(out)
+
+
+def style_options() -> dict:
+    """The choices the editor offers, so its script doesn't repeat the lists above."""
+    return {"size": [SIZE_MIN, SIZE_MAX], "font": [[k, label] for k, label, _ in FONTS],
+            "align": [list(a) for a in ALIGNS], "color": [list(c) for c in COLORS],
+            "bg": [list(b) for b in BACKGROUNDS]}
+
+
+def style_css() -> str:
+    """The CSS for the style classes, on the reader's boxes and the editor's (which have the same
+    classes). The font size is in cqw: percent of the layer's width, which is the page's."""
+    box = ".ov-box.ov-manga-translate"
+    rules = ["#reader .ov-layer, .mte-layer { container-type: inline-size; }",
+             f"{box}.mt-b {{ font-weight: 800; }}",
+             f"{box}.mt-i {{ font-style: italic; }}",
+             f"{box}.mt-u {{ text-transform: uppercase; }}",
+             f"{box}.mt-al-left {{ justify-content: flex-start; text-align: left; }}",
+             f"{box}.mt-al-right {{ justify-content: flex-end; text-align: right; }}"]
+    rules += [f"{box}.mt-f-{key} {{ font-family: {css}; }}" for key, _, css in FONTS if key]
+    for key, _, css in COLORS:
+        if key == "white":  # light text: the outline around it goes dark
+            rules.append(f"{box}.mt-c-{key} {{ color: {css}; --ov-outline: #111; --mt-stroke: #111; }}")
+        elif key:
+            rules.append(f"{box}.mt-c-{key} {{ color: {css}; }}")
+    for key, _, css in BACKGROUNDS:
+        if key:
+            shadow = "none" if key == "none" else f"0 0 0 2px {css}"
+            rules.append(f"{box}.mt-k-{key} {{ background: {css}; box-shadow: {shadow}; }}")
+    rules += [f"{box}.mt-fs-{n} > span {{ font-size: {n / 10:g}cqw; }}" for n in range(SIZE_MIN, SIZE_MAX + 1)]
+    return "\n".join(rules) + "\n"
+
+
+# --- the editor: what its API does --------------------------------------------------------------------
+# The editor works in fractions of the page (0 to 1), like the reader's boxes; the saved data is in
+# pixels of the page as it was sent to the vision server ("w", "h").
+
+MAX_BLOCKS = 300   # boxes saved per page
+MAX_TEXT = 2000    # characters per text
+
+
+class EditError(Exception):
+    """Something the editor asked for can't be done: the message is shown to the owner."""
+
+    def __init__(self, message, status=400):
+        super().__init__(message)
+        self.status = status
+
+
+def _frac(value) -> float:
+    try:
+        return min(max(float(value), 0.0), 1.0)
+    except (TypeError, ValueError):
+        raise EditError("A box has a place that isn't a number") from None
+
+
+def _corners(value) -> list:
+    """[x1, y1, x2, y2] in fractions of the page, in order and not empty."""
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        raise EditError("A box needs four corners")
+    x1, y1, x2, y2 = (_frac(v) for v in value)
+    x1, x2, y1, y2 = min(x1, x2), max(x1, x2), min(y1, y2), max(y1, y2)
+    if x2 - x1 < 0.004 or y2 - y1 < 0.004:
+        raise EditError("That box is too small")
+    return [x1, y1, x2, y2]
+
+
+def box_id(x, y) -> str:
+    """How MangaVibe names a box when the owner hides it with ×: its top-left corner."""
+    return f"{min(max(x, 0.0), 1.0):.3f},{min(max(y, 0.0), 1.0):.3f}"
+
+
+def hidden_boxes(ctx, book, page) -> set:
+    """The ids of this page's boxes the owner hid in the reader."""
+    try:
+        from app.models import OverlayHidden
+    except ImportError:
+        return set()
+    return {row.box for row in ctx.db.query(OverlayHidden).filter_by(book_id=book.id, plugin=ctx.plugin.id, page=page)}
+
+
+def set_hidden_boxes(ctx, book, page, ids):
+    try:
+        from app.models import OverlayHidden
+    except ImportError:
+        return
+    ctx.db.query(OverlayHidden).filter_by(book_id=book.id, plugin=ctx.plugin.id, page=page).delete()
+    for box in set(ids):
+        ctx.db.add(OverlayHidden(book_id=book.id, plugin=ctx.plugin.id, page=page, box=box))
+
+
+def page_image(ctx, book, page):
+    """(the page as it goes to the vision server, its width, its height)."""
+    import io
+
+    from PIL import Image
+    image = ctx.read_page(book, page, max_width=SEND_WIDTH)
+    with Image.open(io.BytesIO(image)) as im:
+        return image, im.width, im.height
+
+
+def editor_page(ctx, book, page) -> dict:
+    """What the editor shows for a page. `state`: ready, none (not translated yet) or failed."""
+    data = ctx.get_page_data(book, page)
+    out = {"book": book.id, "page": page, "pages": book.page_count,
+           "image": f"/api/books/{book.id}/pages/{page}?w=1440&v={int(getattr(book, 'mtime', 0) or 0)}",
+           "cls": box_classes(ctx), "options": style_options(), "state": "ready", "message": "",
+           "edited": False, "blocks": []}
+    if data is None:
+        out.update(state="none", message=getattr(ctx.plugin, "offline", ""))
+        return out
+    if data.get("error"):
+        out.update(state="failed", message=str(data["error"]))
+        return out
+    w, h = data["w"], data["h"]
+    hidden = hidden_boxes(ctx, book, page)
+    for b, (x1, y1, x2, y2) in zip(data.get("blocks", []), display_rects(data)):
+        bx1, by1, bx2, by2 = b["box"]
+        out["blocks"].append({
+            "x": round(x1 / w, 5), "y": round(y1 / h, 5), "w": round((x2 - x1) / w, 5), "h": round((y2 - y1) / h, 5),
+            "src": b["src"], "text": b["text"], "who": b.get("who", ""), "style": clean_style(b.get("style")),
+            # where the Japanese was read (for "Read again"); the same as the box for one drawn by hand
+            "box": [round(bx1 / w, 5), round(by1 / h, 5), round(bx2 / w, 5), round(by2 / h, 5)],
+            "hidden": box_id(x1 / w, y1 / h) in hidden})
+    out["edited"] = bool(data.get("edited"))
+    return out
+
+
+def save_edit(ctx, book, page, items) -> dict:
+    """Saves the page as the editor has it: every box at the place it has there, with its texts and
+    style. Boxes without any text are left out. Returns the page as editor_page()."""
+    if not isinstance(items, list) or len(items) > MAX_BLOCKS:
+        raise EditError("That isn't a list of boxes")
+    old = ctx.get_page_data(book, page)
+    if old and not old.get("error"):
+        data = {k: v for k, v in old.items() if k != "blocks"}
+    else:  # a page that wasn't translated: the boxes are all the owner's
+        _, w, h = page_image(ctx, book, page)
+        data = {"v": DATA_VERSION, "w": w, "h": h, "model": ctx.setting("model") or "manga-translate", "mode": "page"}
+    w, h = data["w"], data["h"]
+    blocks, hidden = [], set()
+    for item in items:
+        if not isinstance(item, dict):
+            raise EditError("That isn't a list of boxes")
+        src, text = (str(item.get(k) or "").strip()[:MAX_TEXT] for k in ("src", "text"))
+        if not src and not text:
+            continue
+        x, y = _frac(item.get("x")), _frac(item.get("y"))
+        x1, y1, x2, y2 = _corners([x, y, x + _frac(item.get("w")), y + _frac(item.get("h"))])
+        rect = [round(x1 * w, 1), round(y1 * h, 1), round(x2 * w, 1), round(y2 * h, 1)]
+        box = rect
+        if item.get("box"):
+            bx1, by1, bx2, by2 = _corners(item["box"])
+            box = [round(bx1 * w, 1), round(by1 * h, 1), round(bx2 * w, 1), round(by2 * h, 1)]
+        block = {"box": box, "rect": rect, "src": src, "text": text}
+        who = str(item.get("who") or "").strip()[:80]
+        if who:
+            block["who"] = who
+        style = clean_style(item.get("style"))
+        if style:
+            block["style"] = style
+        blocks.append(block)
+        if item.get("hidden"):
+            hidden.add(box_id(rect[0] / w, rect[1] / h))
+    data["blocks"] = blocks
+    data["edited"] = True  # "Translate this chapter again" leaves the page alone
+    ctx.set_page_data(book, page, data)
+    set_hidden_boxes(ctx, book, page, hidden)
+    ctx.db.commit()
+    return editor_page(ctx, book, page)
+
+
+def _asked(ctx, what, url, fn):
+    """Runs a call to one of the PC's servers; when it fails, says so in words for the owner."""
+    try:
+        return fn()
+    except httpx.TransportError:
+        raise EditError(f"Can't reach the {what} ({url})", 502) from None
+    except httpx.HTTPStatusError as e:
+        raise EditError(f"The {what} answered with an error ({e.response.status_code})", 502) from None
+
+
+def translate_one(ctx, src, background=()) -> str:
+    """One text translated on its own, with the page's other texts as background."""
+    src = clean_ocr(str(src or ""))[:MAX_TEXT]
+    if not re.search(r"\w", src):
+        return src  # only "…" or "!?": stays as it is
+    if not ctx.setting("llm_url"):
+        raise EditError("Set the LLM server's address in Settings → Plugins first")
+    around = [str(t).strip()[:MAX_TEXT] for t in background if isinstance(t, str) and t.strip()][:12]
+    return _asked(ctx, "LLM server", ctx.setting("llm_url"), lambda: translate_lines(ctx, [src], around)[0])
+
+
+def scan_area(ctx, book, page, corners, translate=True, background=()) -> dict:
+    """Reads the text in one part of the page (the text finder missed it, or read it badly) and
+    translates it -> {"src", "text"}. Nothing is saved: the editor adds it to the page."""
+    x1, y1, x2, y2 = _corners(corners)
+    ocr = _url(ctx.setting("ocr_url")) or _url(ctx.setting("vision_url"))
+    if not ocr:
+        raise EditError("Set the vision server's address in Settings → Plugins first")
+    image, w, h = page_image(ctx, book, page)
+
+    def read():
+        r = httpx.post(ocr + "/ocr", timeout=120, json={
+            "image": base64.b64encode(image).decode(), "boxes": [[x1 * w, y1 * h, x2 * w, y2 * h]]})
+        r.raise_for_status()
+        return r.json()["texts"][0]
+    src = clean_ocr(_asked(ctx, "vision server", ocr, read))
+    return {"src": src, "text": translate_one(ctx, src, background) if translate and src else ""}
+
+
+def reset_page(ctx, book, page) -> dict:
+    """Forgets a page's translation (the owner's changes too) and puts it at the front of the queue."""
+    if not ctx.setting("vision_url") or not ctx.setting("llm_url"):
+        raise EditError("Set the server addresses in Settings → Plugins first")
+    plugin, key = ctx.plugin, (book.id, page)
+    ctx.set_page_data(book, page, None)
+    ctx.db.commit()
+    with plugin.ocr_lock:
+        plugin.ocr.pop(key, None)  # read again too
+    plugin.tries.pop(key, None)
+    plugin.enqueue(ctx, book.id, [page], NOW)
+    return editor_page(ctx, book, page)
+
+
+def make_router():
+    """The editor's API, at /api/plugins/manga-translate/api/... (admins only)."""
+    from fastapi import APIRouter, Body, Depends, HTTPException
+
+    from app.plugins.web import plugin_ctx
+    try:
+        from app.users import manage
+        guards = [manage]
+    except ImportError:  # MangaVibe before accounts: everyone is the owner
+        guards = []
+    router = APIRouter(dependencies=guards)
+
+    def run(ctx, book_id, page, fn, *args):
+        book = ctx.db.get(Book, book_id)
+        if book is None or not 0 <= page < book.page_count:
+            raise HTTPException(404, "No such page")
+        try:
+            return fn(ctx, book, page, *args)
+        except EditError as e:
+            raise HTTPException(e.status, str(e)) from None
+
+    @router.get("/books/{book_id}/pages/{page}")
+    def get_page(book_id: int, page: int, ctx=Depends(plugin_ctx)):
+        return run(ctx, book_id, page, editor_page)
+
+    @router.put("/books/{book_id}/pages/{page}")
+    def put_page(book_id: int, page: int, body: dict = Body(...), ctx=Depends(plugin_ctx)):
+        return run(ctx, book_id, page, save_edit, body.get("blocks"))
+
+    @router.post("/books/{book_id}/pages/{page}/scan")
+    def post_scan(book_id: int, page: int, body: dict = Body(...), ctx=Depends(plugin_ctx)):
+        return run(ctx, book_id, page, scan_area, body.get("box"), body.get("translate", True),
+                   body.get("background") or [])
+
+    @router.post("/books/{book_id}/pages/{page}/reset")
+    def post_reset(book_id: int, page: int, ctx=Depends(plugin_ctx)):
+        return run(ctx, book_id, page, reset_page)
+
+    @router.post("/translate")
+    def post_translate(body: dict = Body(...), ctx=Depends(plugin_ctx)):
+        try:
+            return {"text": translate_one(ctx, body.get("src"), body.get("background") or [])}
+        except EditError as e:
+            raise HTTPException(e.status, str(e)) from None
+
+    return router
+
+
+# --- the editor: how it looks ---------------------------------------------------------------------------
+
+EDITOR_CSS = """
+#mte {
+  position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column;
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  background: #101114; color: #eceef2; color-scheme: dark; font: 14px/1.4 system-ui, sans-serif;
+  --mte-line: #2b303b; --mte-card: #1a1c22; --mte-accent: var(--accent, #ff7a59);
+}
+#mte[hidden], #mte [hidden] { display: none; }
+#mte button, #mte select, #mte input, #mte textarea { font: inherit; color: inherit; }
+#mte button, #mte select {
+  min-height: 32px; padding: 4px 10px; background: var(--mte-card); border: 1px solid var(--mte-line);
+  border-radius: 8px; cursor: pointer;
+}
+#mte button:hover { border-color: #596072; }
+#mte button:disabled { opacity: .45; cursor: default; }
+#mte button.on { border-color: var(--mte-accent); color: var(--mte-accent); }
+#mte button.mte-primary { background: var(--mte-accent); border-color: var(--mte-accent); color: var(--accent-text, #1d0d07); font-weight: 600; }
+#mte :focus-visible { outline: 2px solid var(--mte-accent); outline-offset: 1px; }
+.mte-top, .mte-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--mte-line); }
+.mte-title { margin: 0 6px; font-size: 15px; }
+.mte-nav { display: flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.mte-space { flex: 1; }
+.mte-dirty { color: var(--mte-accent); font-size: 12px; }
+.mte-main { flex: 1; display: flex; min-height: 0; }
+.mte-work { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.mte-hint { padding: 5px 12px; color: #979eab; font-size: 12px; }
+.mte-stage { flex: 1; display: flex; overflow: auto; padding: 14px; background: #000; }
+.mte-page { position: relative; flex: none; margin: auto; }
+.mte-page > img { display: block; width: 100%; height: auto; user-select: none; -webkit-user-drag: none; }
+.mte-layer { position: absolute; inset: 0; }
+.mte-layer.mte-draw { cursor: crosshair; touch-action: none; }
+.mte-layer.mte-off .mte-box { visibility: hidden; }
+.mte-box {
+  position: absolute; display: flex; align-items: center; justify-content: center; background: #fff; color: #111;
+  font-family: var(--overlay-font, "Comic Neue", "Comic Sans MS", "Segoe Print", system-ui, sans-serif);
+  font-weight: 600; line-height: 1.12; text-align: center; overflow-wrap: normal;
+  cursor: move; touch-action: none; user-select: none;
+}
+.mte-box > span { max-width: 100%; padding: 0 .15em; }
+.mte-layer.mte-draw .mte-box { pointer-events: none; }
+.mte-box.sel { z-index: 2; outline: 2px solid var(--mte-accent); outline-offset: 2px; }
+.mte-box.mte-empty { background: rgba(255, 122, 89, .12); box-shadow: none; outline: 1px dashed var(--mte-accent); }
+.mte-box.mte-hidden { opacity: .4; }
+.mte-n {
+  position: absolute; top: -9px; left: -9px; min-width: 18px; padding: 0 5px; border-radius: 9px; background: #14151a;
+  color: #fff; font: 600 11px/18px system-ui, sans-serif; text-align: center; text-transform: none; pointer-events: none;
+}
+.mte-box.sel .mte-n { background: var(--mte-accent); color: #1d0d07; }
+.mte-h {
+  position: absolute; width: 12px; height: 12px; background: #fff; border: 2px solid var(--mte-accent); border-radius: 3px;
+  transform: translate(-50%, -50%); touch-action: none;
+}
+.mte-h[data-h="nw"] { left: 0; top: 0; cursor: nwse-resize; }
+.mte-h[data-h="n"] { left: 50%; top: 0; cursor: ns-resize; }
+.mte-h[data-h="ne"] { left: 100%; top: 0; cursor: nesw-resize; }
+.mte-h[data-h="e"] { left: 100%; top: 50%; cursor: ew-resize; }
+.mte-h[data-h="se"] { left: 100%; top: 100%; cursor: nwse-resize; }
+.mte-h[data-h="s"] { left: 50%; top: 100%; cursor: ns-resize; }
+.mte-h[data-h="sw"] { left: 0; top: 100%; cursor: nesw-resize; }
+.mte-h[data-h="w"] { left: 0; top: 50%; cursor: ew-resize; }
+/* fingers: four larger handles outside the corners, so a small box can still be taken hold of */
+@media (pointer: coarse) {
+  .mte-h { width: 22px; height: 22px; border-radius: 50%; }
+  .mte-h[data-h="n"], .mte-h[data-h="e"], .mte-h[data-h="s"], .mte-h[data-h="w"] { display: none; }
+  .mte-h[data-h="nw"] { transform: translate(-95%, -95%); }
+  .mte-h[data-h="ne"] { transform: translate(-5%, -95%); }
+  .mte-h[data-h="se"] { transform: translate(-5%, -5%); }
+  .mte-h[data-h="sw"] { transform: translate(-95%, -5%); }
+}
+.mte-rubber, .mte-pending {
+  position: absolute; border: 2px dashed var(--mte-accent); background: rgba(255, 122, 89, .15); pointer-events: none;
+}
+.mte-pending { animation: mte-pulse .7s ease-in-out infinite alternate; }
+@keyframes mte-pulse { to { background: rgba(255, 122, 89, .4); } }
+.mte-side { display: flex; flex-direction: column; width: 370px; min-height: 0; border-left: 1px solid var(--mte-line); }
+.mte-notice { margin: 10px 10px 0; padding: 10px; border: 1px solid var(--mte-line); border-radius: 10px; background: var(--mte-card); }
+.mte-notice button { margin-top: 8px; }
+.mte-list { flex: 1; overflow: auto; padding: 10px; }
+.mte-none { color: #979eab; }
+.mte-card { margin-bottom: 10px; padding: 10px; border: 1px solid var(--mte-line); border-radius: 10px; background: var(--mte-card); }
+.mte-card.sel { border-color: var(--mte-accent); }
+.mte-card.hid .mte-n { text-decoration: line-through; }
+.mte-card .mte-n { position: static; display: inline-block; background: #343946; }
+.mte-card.sel .mte-n { background: var(--mte-accent); color: #1d0d07; }
+.mte-head, .mte-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.mte-head { margin-bottom: 6px; }
+.mte-head input { flex: 1; min-width: 60px; }
+.mte-row { margin-top: 6px; }
+.mte-card label { display: block; margin-top: 6px; color: #979eab; font-size: 12px; }
+#mte textarea, #mte input[type="text"] {
+  display: block; width: 100%; padding: 6px 8px; background: #0d0e11; border: 1px solid var(--mte-line); border-radius: 8px;
+  color: #eceef2; font-size: 14px;
+}
+#mte textarea { resize: vertical; }
+.mte-style { margin-top: 10px; padding-top: 4px; border-top: 1px solid var(--mte-line); }
+.mte-lab { width: 44px; color: #979eab; font-size: 12px; }
+.mte-style input[type="range"] { flex: 1; min-width: 80px; accent-color: var(--mte-accent); }
+.mte-style output { width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
+#mte button.mte-sw { width: 26px; min-height: 26px; padding: 0; border-radius: 50%; }
+#mte button.mte-sw.on { box-shadow: 0 0 0 2px var(--mte-accent); }
+/* "no background": stripes (over the colour the button gets in its style attribute) */
+#mte button.mte-sw[data-v="none"] { background: repeating-linear-gradient(45deg, #777 0 4px, #222 4px 8px) !important; }
+.mte-foot { display: flex; gap: 6px; padding: 10px; border-top: 1px solid var(--mte-line); }
+.mte-ask { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, .6); }
+.mte-ask > div { max-width: 360px; padding: 16px; border: 1px solid var(--mte-line); border-radius: 12px; background: var(--mte-card); }
+.mte-ask p { margin: 0 0 12px; }
+@media (max-width: 820px) {
+  .mte-main { flex-direction: column; }
+  .mte-side { width: auto; height: 46%; border-left: 0; border-top: 1px solid var(--mte-line); }
+  .mte-hint, .mte-title { display: none; }
+  .mte-stage { padding: 8px; }
+  .mte-top, .mte-tools { padding: 6px 8px; }
+}
+"""
+
+
+# --- the editor: its script ---------------------------------------------------------------------------
+# Runs in the web app (Plugin.js). From the reader it needs three things: its "Edit this page" button
+# (to open instead of asking the server), the page being read, and the changed boxes drawn again.
+# MangaVibe with plugin API 12 gives all three (the "book-action" event and MangaVibe.reader); on
+# older ones the script finds them in the reader's markup.
+
+EDITOR_JS = r"""
+(() => {
+"use strict";
+if (window.__mangaTranslateEditor) return;  // the script is loaded again when the plugin is switched on
+window.__mangaTranslateEditor = true;
+
+const PID = "manga-translate", LABEL = "__EDIT_LABEL__", API = `/api/plugins/${PID}/api`;
+const MIN = 0.012;  // smallest box side, as a fraction of the page
+const HINTS = {
+  move: "Click a box to edit it. Drag it to move it, drag its handles to resize it.",
+  text: "Drag on the page to draw a text box of your own.",
+  scan: "Drag around Japanese text on the page: it is read and translated.",
+};
+const E = { root: null, book: 0, page: 0, pages: 0, info: null, blocks: [], sel: -1, tool: "move",
+  dirty: false, changed: false, undo: [], zoom: 1, drag: null, poll: 0, pending: [], focusSnap: null };
+const busy = new WeakSet();  // blocks waiting for the PC ("Read again", "Translate")
+
+const api = (path, opts) => MangaVibe.api(API + path, opts);
+const toast = (text, kind = "") => MangaVibe.toast(text, kind ? 6000 : 2500, kind);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
+const pct = (v) => `${(v * 100).toFixed(3)}%`;
+const q = (sel) => E.root.querySelector(sel);
+
+/* ---------------- opening: the reader's "Edit this page" button ----------------
+   MangaVibe with plugin API 12 hands the button to this script (the "book-action" event) and says
+   what is being read (MangaVibe.reader). Older ones (2.0.0 on) have neither: there the script takes
+   the click on the button itself and reads the page from the reader's markup. */
+
+const HOST = window.MangaVibe.reader || null;
+
+if (HOST) {
+  MangaVibe.on(PID, "book-action", (key, at) => {
+    if (key !== "edit") return false;
+    open(at);
+    return true;
+  });
+} else {
+  document.addEventListener("click", (e) => {
+    const button = e.target.closest?.("#reader button");
+    if (!button || button.textContent.trim() !== LABEL) return;
+    e.preventDefault();
+    e.stopPropagation();
+    open(where());
+  }, true);
+}
+
+/* older MangaVibe: the book and page the reader shows: the book from the address, the page from the
+   page image (paged) or the page in the middle of the screen (vertical), else the page slider */
+function where() {
+  const m = location.hash.match(/^#\/read\/(\d+)/), reader = document.getElementById("reader");
+  if (!m || !reader || reader.hidden) return null;
+  let page = null;
+  const image = reader.querySelector(".stage img");
+  if (image) {
+    const pm = (image.getAttribute("src") || "").match(/\/pages\/(\d+)/);
+    if (pm) page = +pm[1];
+  } else {
+    const middle = innerHeight / 2;
+    for (const el of reader.querySelectorAll(".vpage")) {
+      const r = el.getBoundingClientRect();
+      if (r.top <= middle && r.bottom > middle) { page = +el.dataset.p; break; }
+    }
+  }
+  if (page === null || Number.isNaN(page)) page = (+reader.querySelector("#r-slider")?.value || 1) - 1;
+  return { book: +m[1], page };
+}
+
+async function open(at) {
+  if (!at) return toast("Open a book in the reader first", "error");
+  build();
+  Object.assign(E, { info: null, blocks: [], sel: -1, dirty: false, changed: false, undo: [], zoom: 1, pending: [] });
+  q(".mte-ask").hidden = true;
+  E.root.hidden = false;
+  await load(at.book, at.page);
+}
+
+function build() {
+  if (E.root) return;
+  const root = E.root = document.createElement("div");
+  root.id = "mte";
+  root.hidden = true;
+  root.setAttribute("role", "dialog");
+  root.setAttribute("aria-label", "Edit the translation");
+  root.innerHTML = `
+    <div class="mte-top">
+      <button data-a="close" title="Close the editor (Esc)">✕ Close</button>
+      <b class="mte-title">Edit translation</b>
+      <span class="mte-nav"><button data-a="prev" title="Previous page" aria-label="Previous page">‹</button>
+        <span data-r="pageno"></span>
+        <button data-a="next" title="Next page" aria-label="Next page">›</button></span>
+      <span class="mte-space"></span>
+      <span class="mte-dirty" data-r="dirty" hidden>Not saved</span>
+      <button data-a="undo" title="Undo (Ctrl+Z)">Undo</button>
+      <button data-a="save" class="mte-primary" title="Save (Ctrl+S)">Save</button>
+    </div>
+    <div class="mte-main">
+      <section class="mte-work">
+        <div class="mte-tools">
+          <button data-tool="move">Move</button>
+          <button data-tool="text" title="Draw a text box of your own">+ Text box</button>
+          <button data-tool="scan" title="Mark text that wasn't found: it is read and translated">Scan text</button>
+          <span class="mte-space"></span>
+          <button data-a="boxes" title="See the page without the boxes">Hide boxes</button>
+          <button data-a="zoomout" title="Smaller" aria-label="Zoom out">−</button>
+          <button data-a="fit">Fit</button>
+          <button data-a="zoomin" title="Larger" aria-label="Zoom in">+</button>
+        </div>
+        <div class="mte-hint" data-r="hint"></div>
+        <div class="mte-stage"><div class="mte-page"><img alt="The page"><div class="mte-layer"></div></div></div>
+      </section>
+      <aside class="mte-side" aria-label="The texts of this page">
+        <div class="mte-notice" data-r="notice" hidden></div>
+        <div class="mte-list" data-r="list"></div>
+        <div class="mte-foot"><button data-a="reset" title="Throw away this page's translation and your changes to it, and translate it again">Translate this page again</button></div>
+      </aside>
+    </div>
+    <div class="mte-ask" hidden><div role="alertdialog" aria-label="Unsaved changes">
+      <p>This page has changes that aren't saved.</p>
+      <div class="mte-row"><button data-a="saveclose" class="mte-primary">Save and close</button>
+        <button data-a="discard">Discard</button><button data-a="stay">Keep editing</button></div>
+    </div></div>`;
+  document.body.append(root);
+  E.layer = q(".mte-layer");
+  E.img = q(".mte-page > img");
+  E.list = q('[data-r="list"]');
+  E.img.addEventListener("load", layout);
+  new ResizeObserver(() => { layout(); fitAll(); }).observe(q(".mte-stage"));
+  root.addEventListener("click", onClick);
+  E.layer.addEventListener("pointerdown", onDown);
+  E.layer.addEventListener("pointermove", onMove);
+  E.layer.addEventListener("pointerup", onUp);
+  E.layer.addEventListener("pointercancel", onUp);
+  E.layer.addEventListener("dblclick", () => focusText(E.sel));
+  E.list.addEventListener("focusin", onFocus);
+  E.list.addEventListener("input", onInput);
+  E.list.addEventListener("change", onChange);
+}
+
+/* ---------------- loading and saving ---------------- */
+
+async function load(book, page, quiet = false) {
+  clearTimeout(E.poll);
+  let info;
+  try { info = await api(`/books/${book}/pages/${page}`); }
+  catch (e) {
+    if (quiet) return void (E.poll = setTimeout(wait, 4000));
+    toast(e.message, "error");
+    if (!E.info) finish();  // nothing to show: e.g. not an admin
+    return;
+  }
+  if (E.root.hidden) return;
+  show(info);
+}
+
+/* put a page as the server has it on the screen */
+function show(info) {
+  clearTimeout(E.poll);
+  const same = E.info && E.info.book === info.book && E.info.page === info.page;
+  Object.assign(E, { book: info.book, page: info.page, pages: info.pages, info, blocks: info.blocks,
+    dirty: false, pending: [], drag: null });
+  if (!same) Object.assign(E, { sel: -1, undo: [], tool: "move" });
+  if (E.sel >= E.blocks.length) E.sel = -1;
+  if (E.img.getAttribute("src") !== info.image) E.img.src = info.image;
+  renderAll();
+  if (info.state === "none") E.poll = setTimeout(wait, 2500);
+}
+
+/* a page that isn't translated yet: look again until it is (not once the owner started on it) */
+function wait() {
+  if (E.root.hidden || E.dirty || E.blocks.length || E.pending.length) return;
+  load(E.book, E.page, true);
+}
+
+async function save() {
+  if (!E.dirty) return true;
+  let info;
+  try { info = await api(`/books/${E.book}/pages/${E.page}`, { method: "PUT", body: { blocks: E.blocks } }); }
+  catch (e) { toast(e.message, "error"); return false; }
+  E.changed = true;
+  show(info);
+  toast("Saved");
+  return true;
+}
+
+async function go(step) {
+  const page = E.page + step;
+  if (page < 0 || page >= E.pages) return;
+  if (E.dirty && !(await save())) return;
+  E.info = { ...E.info, page: -1 };  // another page: selection and undo start over
+  load(E.book, page);
+}
+
+function close() {
+  if (E.dirty) q(".mte-ask").hidden = false; else finish();
+}
+
+function finish() {
+  clearTimeout(E.poll);
+  E.root.hidden = true;
+  E.dirty = false;
+  if (E.changed) refreshReader();
+  E.changed = false;
+}
+
+/* the reader draws the changed boxes. Older MangaVibe: it does when its Translation switch is used,
+   so off and on again (or just on, so the change shows) */
+function refreshReader() {
+  if (HOST) return HOST.redraw();
+  const sw = document.querySelector(`#reader [data-ov="${PID}"]`);
+  if (!sw) return;
+  if (sw.classList.contains("on")) sw.click();
+  sw.click();
+}
+
+async function reset() {
+  if (E.info.state === "ready" && !confirm("Translate this page again? Its boxes and your changes to them are replaced.")) return;
+  try {
+    const info = await api(`/books/${E.book}/pages/${E.page}/reset`, { method: "POST" });
+    E.changed = true;
+    E.asked = `${E.book}:${E.page}`;
+    show(info);
+  } catch (e) { toast(e.message, "error"); }
+}
+
+/* ---------------- undo ---------------- */
+
+const snap = () => JSON.stringify(E.blocks);
+
+function pushUndo(before) {
+  if (before === null || before === snap()) return;
+  E.undo.push(before);
+  if (E.undo.length > 60) E.undo.shift();
+  E.dirty = true;
+  top();
+}
+
+function change(fn) {
+  const before = snap();
+  fn();
+  pushUndo(before);
+}
+
+function undo() {
+  const before = E.undo.pop();
+  if (before === undefined) return;
+  E.blocks = JSON.parse(before);
+  if (E.sel >= E.blocks.length) E.sel = -1;
+  E.dirty = true;
+  renderAll();
+}
+
+/* ---------------- drawing the page ---------------- */
+
+function renderAll() {
+  top();
+  notice();
+  renderBoxes();
+  renderList();
+}
+
+function top() {
+  q('[data-r="pageno"]').textContent = `Page ${E.page + 1} / ${E.pages}`;
+  q('[data-a="prev"]').disabled = E.page <= 0;
+  q('[data-a="next"]').disabled = E.page >= E.pages - 1;
+  q('[data-a="undo"]').disabled = !E.undo.length;
+  q('[data-a="save"]').disabled = !E.dirty;
+  q('[data-r="dirty"]').hidden = !E.dirty;
+  q('[data-r="hint"]').textContent = HINTS[E.tool];
+  for (const b of E.root.querySelectorAll("[data-tool]")) b.classList.toggle("on", b.dataset.tool === E.tool);
+  E.layer.classList.toggle("mte-draw", E.tool !== "move");
+  q('[data-a="reset"]').hidden = !E.info || E.info.state !== "ready";
+}
+
+function notice() {
+  const el = q('[data-r="notice"]'), info = E.info;
+  el.hidden = !info || info.state === "ready";
+  if (el.hidden) return;
+  const asked = E.asked === `${E.book}:${E.page}`;
+  el.innerHTML = info.state === "failed"
+    ? `<div>This page couldn't be translated: ${esc(info.message)}</div><button data-a="reset">Try again</button>`
+    : `<div>${esc(info.message || (asked ? "Translating this page…" : "This page isn't translated yet."))}</div>
+       <div class="mte-none">You can also add boxes yourself with “Scan text” and “+ Text box”.</div>
+       ${asked ? "" : `<button data-a="reset">Translate it now</button>`}`;
+}
+
+/* the page's size on the screen: fitted into the space, times the zoom */
+function layout() {
+  const stage = q(".mte-stage"), w = E.img.naturalWidth, h = E.img.naturalHeight;
+  if (!w || !h || !stage.clientWidth) return;
+  const pad = 2 * parseFloat(getComputedStyle(stage).paddingLeft);
+  const fit = Math.min(stage.clientWidth - pad, (stage.clientHeight - pad) * w / h);
+  q(".mte-page").style.width = `${Math.max(120, Math.round(fit * E.zoom))}px`;
+  fitAll();
+}
+
+function styleClasses(style) {
+  const s = style || {}, out = [];
+  if (s.size) out.push(`mt-fs-${s.size}`);
+  if (s.bold) out.push("mt-b");
+  if (s.italic) out.push("mt-i");
+  if (s.upper) out.push("mt-u");
+  if (s.font) out.push(`mt-f-${s.font}`);
+  if (s.align) out.push(`mt-al-${s.align}`);
+  if (s.color) out.push(`mt-c-${s.color}`);
+  if (s.bg) out.push(`mt-k-${s.bg}`);
+  return out.join(" ");
+}
+
+const HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"].map((h) => `<i class="mte-h" data-h="${h}"></i>`).join("");
+
+function boxClass(b, i) {
+  return `ov-box ov-${PID} mte-box ${E.info.cls} ${styleClasses(b.style)}${i === E.sel ? " sel" : ""}`
+    + `${b.hidden ? " mte-hidden" : ""}${b.text ? "" : " mte-empty"}`;
+}
+
+function place(el, r) {
+  Object.assign(el.style, { left: pct(r.x), top: pct(r.y), width: pct(r.w), height: pct(r.h) });
+}
+
+function renderBoxes() {
+  const layer = E.layer;
+  layer.innerHTML = "";
+  E.blocks.forEach((b, i) => {
+    const el = document.createElement("div");
+    el.className = boxClass(b, i);
+    el.dataset.i = i;
+    el.innerHTML = `<span></span><em class="mte-n">${i + 1}</em>${i === E.sel ? HANDLES : ""}`;
+    el.firstChild.textContent = b.text;
+    place(el, b);
+    layer.append(el);
+  });
+  for (const r of E.pending) {
+    const el = document.createElement("div");
+    el.className = "mte-pending";
+    place(el, r);
+    layer.append(el);
+  }
+  fitAll();
+}
+
+const boxEl = (i) => E.layer.querySelector(`.mte-box[data-i="${i}"]`);
+
+/* the largest font size at which the text fits its box, as the reader does it; a box with a size
+   of its own keeps that */
+function fit(el) {
+  const b = E.blocks[+el.dataset.i], span = el.firstChild;
+  el.style.fontSize = "";
+  if (!b || (b.style && b.style.size)) return;
+  const h = el.clientHeight, w = el.clientWidth;
+  if (!h || !w) return;
+  let lo = 5, hi = Math.max(6, Math.min(h * 0.6, 64));
+  for (let n = 0; n < 7; n++) {
+    const mid = (lo + hi) / 2;
+    el.style.fontSize = `${mid}px`;
+    if (span.offsetHeight <= h && span.scrollWidth <= w) lo = mid; else hi = mid;
+  }
+  el.style.fontSize = `${lo}px`;
+}
+
+function fitAll() {
+  if (E.layer) E.layer.querySelectorAll(".mte-box").forEach(fit);
+}
+
+/* one box again after its text, style or state changed */
+function redraw(i) {
+  const el = boxEl(i), b = E.blocks[i];
+  if (!el || !b) return;
+  el.className = boxClass(b, i);
+  el.firstChild.textContent = b.text;
+  fit(el);
+}
+
+/* ---------------- the list of texts ---------------- */
+
+function renderList() {
+  const scrolled = E.list.scrollTop;  // kept: the list is shorter for a moment while it's rebuilt
+  E.list.innerHTML = E.blocks.map(card).join("") || (E.info.state === "ready"
+    ? `<p class="mte-none">No text boxes on this page. “Scan text” reads a bubble you mark; “+ Text box” adds one you write yourself.</p>` : "");
+  styleRow();
+  E.list.scrollTop = scrolled;
+}
+
+function card(b, i) {
+  const wait = busy.has(b);
+  return `<div class="mte-card${i === E.sel ? " sel" : ""}${b.hidden ? " hid" : ""}" data-i="${i}">
+    <div class="mte-head"><em class="mte-n">${i + 1}</em>
+      <input type="text" data-f="who" value="${esc(b.who)}" placeholder="Who says it" aria-label="Who says it">
+      <button data-c="hide" title="${b.hidden ? "Show this box in the reader again" : "Keep the box but don't show it in the reader"}">${b.hidden ? "Show" : "Hide"}</button>
+      <button data-c="del" title="Delete this box">Delete</button></div>
+    <label>Japanese (as read)
+      <textarea data-f="src" rows="2" lang="ja" spellcheck="false">${esc(b.src)}</textarea></label>
+    <div class="mte-row">
+      <button data-c="ocr" ${wait ? "disabled" : ""} title="Read the Japanese in this box's place again">Read again</button>
+      <button data-c="tr" ${wait || !b.src.trim() ? "disabled" : ""} title="Translate the Japanese above again">${wait ? "Working…" : "Translate"}</button></div>
+    <label>Translation
+      <textarea data-f="text" rows="3">${esc(b.text)}</textarea></label>
+  </div>`;
+}
+
+/* the look of the selected box: a row of controls at the end of its card */
+function styleRow() {
+  E.list.querySelector(".mte-style")?.remove();
+  const b = E.blocks[E.sel], el = E.list.querySelector(`.mte-card[data-i="${E.sel}"]`);
+  if (!b || !el) return;
+  const s = b.style || {}, o = E.info.options;
+  const swatch = (key, [v, label, css]) => `<button class="mte-sw${(s[key] || "") === v ? " on" : ""}" data-o="${key}"
+    data-v="${esc(v)}" style="background:${esc(css)}" title="${esc(label)}" aria-label="${esc(label)}"></button>`;
+  const flag = (key, label, title) => `<button data-t="${key}" class="${s[key] ? "on" : ""}" title="${title}">${label}</button>`;
+  el.insertAdjacentHTML("beforeend", `<div class="mte-style">
+    <div class="mte-row"><span class="mte-lab">Size</span>
+      <button data-c="auto" class="${s.size ? "" : "on"}" title="As large as fits the box">Auto</button>
+      <input type="range" data-f="size" min="${o.size[0]}" max="${o.size[1]}" step="1" value="${s.size || fitted(E.sel)}" aria-label="Font size">
+      <output>${s.size || "Auto"}</output></div>
+    <div class="mte-row"><span class="mte-lab">Style</span>
+      ${flag("bold", "<b>B</b>", "Bold")}${flag("italic", "<i>I</i>", "Italic")}${flag("upper", "AA", "Capital letters")}
+      <select data-f="font" aria-label="Font">${o.font.map(([v, label]) =>
+        `<option value="${esc(v)}"${(s.font || "") === v ? " selected" : ""}>${esc(label)}</option>`).join("")}</select></div>
+    <div class="mte-row"><span class="mte-lab">Align</span>
+      ${o.align.map(([v, label]) => `<button data-o="align" data-v="${esc(v)}" class="${(s.align || "") === v ? "on" : ""}">${esc(label)}</button>`).join("")}</div>
+    <div class="mte-row"><span class="mte-lab">Text</span>${o.color.map((c) => swatch("color", c)).join("")}</div>
+    <div class="mte-row"><span class="mte-lab">Box</span>${o.bg.map((c) => swatch("bg", c)).join("")}</div>
+    <div class="mte-row"><button data-c="all" title="Give every box on this page this size and style">Use this look for all boxes</button></div>
+  </div>`);
+}
+
+/* the size a box's fitted text has now, in the editor's size steps (tenths of a percent of the page's width) */
+function fitted(i) {
+  const el = boxEl(i), o = E.info.options.size;
+  const px = el ? parseFloat(getComputedStyle(el.firstChild).fontSize) : 0;
+  return clamp(Math.round(px / (E.layer.clientWidth || 1) * 1000) || 20, o[0], o[1]);
+}
+
+function select(i, { scroll = false, list = true } = {}) {
+  if (i === E.sel) return;
+  E.sel = i;
+  renderBoxes();
+  if (!list) return;
+  for (const el of E.list.querySelectorAll(".mte-card")) el.classList.toggle("sel", +el.dataset.i === i);
+  styleRow();
+  if (scroll) E.list.querySelector(".mte-card.sel")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+}
+
+function focusText(i) {
+  const ta = E.list.querySelector(`.mte-card[data-i="${i}"] [data-f="text"]`);
+  if (!ta) return;
+  ta.focus();
+  ta.select();
+}
+
+/* ---------------- typing in the list ---------------- */
+
+const cardIndex = (el) => +(el.closest(".mte-card")?.dataset.i ?? -1);
+
+function onFocus(e) {
+  if (!e.target.dataset.f) return;
+  E.focusSnap = snap();
+  select(cardIndex(e.target));
+}
+
+function onInput(e) {
+  const f = e.target.dataset.f, i = cardIndex(e.target), b = E.blocks[i];
+  if (!f || !b) return;
+  if (f === "size") {
+    b.style = { ...b.style, size: +e.target.value };
+    e.target.nextElementSibling.textContent = e.target.value;
+    e.target.previousElementSibling.classList.remove("on");
+  } else if (f === "font") {
+    b.style = { ...b.style, font: e.target.value };
+  } else {
+    b[f] = e.target.value;
+    if (f === "src") {
+      const tr = e.target.closest(".mte-card").querySelector('[data-c="tr"]');
+      if (!busy.has(b)) tr.disabled = !b.src.trim();
+    }
+  }
+  E.dirty = true;
+  top();
+  redraw(i);
+}
+
+/* a field was left (or a slider let go): what changed since it was entered is one step to undo */
+function onChange(e) {
+  if (!e.target.dataset.f) return;
+  pushUndo(E.focusSnap);
+  E.focusSnap = snap();
+}
+
+/* ---------------- buttons ---------------- */
+
+function onClick(e) {
+  const b = e.target.closest("button");
+  if (!b || b.disabled) {
+    const el = e.target.closest(".mte-card");
+    if (el && !e.target.closest("input, textarea, select")) select(+el.dataset.i);
+    return;
+  }
+  const d = b.dataset, i = cardIndex(b);
+  if (d.tool) { E.tool = d.tool; return top(); }
+  if (d.a) return actions[d.a]?.();
+  if (d.c) {
+    if (d.c !== "del") select(i);  // the box the button is about
+    return cardActions[d.c]?.(i, E.blocks[i]);
+  }
+  const block = E.blocks[i];
+  if (!block) return;
+  if (d.t) change(() => { block.style = { ...block.style, [d.t]: !(block.style || {})[d.t] }; });
+  else if (d.o) change(() => { block.style = { ...block.style, [d.o]: d.v }; });
+  else return;
+  redraw(i);
+  styleRow();
+}
+
+const actions = {
+  close, save, undo, reset,
+  prev: () => go(-1),
+  next: () => go(1),
+  saveclose: async () => { q(".mte-ask").hidden = true; if (await save()) finish(); },
+  discard: () => { q(".mte-ask").hidden = true; E.dirty = false; finish(); },
+  stay: () => { q(".mte-ask").hidden = true; },
+  boxes() {
+    const off = E.layer.classList.toggle("mte-off");
+    q('[data-a="boxes"]').textContent = off ? "Show boxes" : "Hide boxes";
+  },
+  zoomin: () => { E.zoom = Math.min(4, E.zoom * 1.25); layout(); },
+  zoomout: () => { E.zoom = Math.max(0.5, E.zoom / 1.25); layout(); },
+  fit: () => { E.zoom = 1; layout(); },
+};
+
+const cardActions = {
+  del(i) {
+    change(() => { E.blocks.splice(i, 1); E.sel = -1; });
+    renderAll();
+  },
+  hide(i, b) {
+    change(() => { b.hidden = !b.hidden; });
+    renderAll();
+  },
+  auto(i, b) {
+    const size = (b.style || {}).size ? 0 : fitted(i);
+    change(() => { b.style = { ...b.style, size }; });
+    redraw(i);
+    styleRow();
+  },
+  all(i, b) {
+    change(() => { for (const other of E.blocks) other.style = { ...b.style }; });
+    renderBoxes();
+    toast("Every box on this page has this look now");
+  },
+  /* read the Japanese again, where it was read before (or where the box is) */
+  ocr: (i, b) => ask(b, `/books/${E.book}/pages/${E.page}/scan`,
+    { box: b.box || [b.x, b.y, b.x + b.w, b.y + b.h], translate: false },
+    (r) => { if (r.src) b.src = r.src; else toast("No text was read there", "error"); }),
+  tr: (i, b) => ask(b, "/translate", { src: b.src, background: around(b) }, (r) => { b.text = r.text; }),
+};
+
+/* the page's other Japanese texts: they tell the model what the talk is about */
+const around = (b) => E.blocks.filter((x) => x !== b && x.src).map((x) => x.src).slice(0, 12);
+
+/* ask the PC something about block b, and put the answer in with `fill` (one step to undo) */
+async function ask(b, path, body, fill) {
+  if (busy.has(b)) return;
+  const at = `${E.book}:${E.page}`;
+  busy.add(b);
+  renderList();
+  let answer = null;
+  try { answer = await api(path, { method: "POST", body }); }
+  catch (e) { toast(e.message, "error"); }
+  busy.delete(b);
+  if (at !== `${E.book}:${E.page}` || !E.blocks.includes(b)) return;  // another page, or undone meanwhile
+  if (answer) change(() => fill(answer));
+  renderAll();
+}
+
+/* ---------------- the mouse or finger on the page ---------------- */
+
+function point(e) {
+  const r = E.layer.getBoundingClientRect();
+  return { x: clamp((e.clientX - r.left) / r.width, 0, 1), y: clamp((e.clientY - r.top) / r.height, 0, 1) };
+}
+
+const rectOf = (a, b) => ({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) });
+
+function onDown(e) {
+  if (e.button || E.drag) return;
+  const handle = e.target.closest(".mte-h"), el = e.target.closest(".mte-box"), start = point(e);
+  if (E.tool !== "move") {
+    const rubber = document.createElement("div");
+    rubber.className = "mte-rubber";
+    E.layer.append(rubber);
+    E.drag = { kind: "draw", start, rubber };
+  } else if (handle) {
+    E.drag = { kind: "size", i: E.sel, h: handle.dataset.h, start, from: { ...E.blocks[E.sel] }, before: snap() };
+  } else if (el) {
+    const i = +el.dataset.i;
+    select(i, { scroll: true });
+    E.drag = { kind: "move", i, start, from: { ...E.blocks[i] }, before: snap() };
+  } else {
+    return select(-1);
+  }
+  E.drag.pointer = e.pointerId;
+  E.layer.setPointerCapture(e.pointerId);
+  e.preventDefault();
+}
+
+function onMove(e) {
+  const d = E.drag;
+  if (!d || e.pointerId !== d.pointer) return;
+  const p = point(e), dx = p.x - d.start.x, dy = p.y - d.start.y;
+  if (d.kind === "draw") return place(d.rubber, rectOf(d.start, p));
+  if (!d.moved && Math.abs(dx) + Math.abs(dy) < 0.004) return;  // a click, not a drag
+  d.moved = true;
+  const b = E.blocks[d.i], f = d.from;
+  if (d.kind === "move") {
+    b.x = clamp(f.x + dx, 0, 1 - f.w);
+    b.y = clamp(f.y + dy, 0, 1 - f.h);
+  } else {
+    let x1 = f.x, y1 = f.y, x2 = f.x + f.w, y2 = f.y + f.h;
+    if (d.h.includes("w")) x1 = clamp(x1 + dx, 0, x2 - MIN);
+    if (d.h.includes("e")) x2 = clamp(x2 + dx, x1 + MIN, 1);
+    if (d.h.includes("n")) y1 = clamp(y1 + dy, 0, y2 - MIN);
+    if (d.h.includes("s")) y2 = clamp(y2 + dy, y1 + MIN, 1);
+    Object.assign(b, { x: x1, y: y1, w: x2 - x1, h: y2 - y1 });
+  }
+  const el = boxEl(d.i);
+  place(el, b);
+  if (d.kind === "size") fit(el);
+}
+
+function onUp(e) {
+  const d = E.drag;
+  if (!d || e.pointerId !== d.pointer) return;
+  E.drag = null;
+  if (d.kind !== "draw") return pushUndo(d.before);
+  d.rubber.remove();
+  const r = rectOf(d.start, point(e)), tool = E.tool;
+  E.tool = "move";
+  top();
+  if (e.type === "pointercancel" || r.w < MIN || r.h < MIN) return;
+  if (tool === "text") addText(r); else addScan(r);
+}
+
+function addBlock(r, src, text, box) {
+  change(() => {
+    E.blocks.push({ x: r.x, y: r.y, w: r.w, h: r.h, src, text, who: "", style: {}, box, hidden: false });
+    E.sel = E.blocks.length - 1;
+  });
+  renderAll();
+  E.list.querySelector(".mte-card.sel")?.scrollIntoView({ block: "nearest" });
+}
+
+function addText(r) {
+  addBlock(r, "", "Text", null);
+  focusText(E.sel);
+}
+
+/* text the finder missed: the marked part of the page is read and translated, and becomes a box */
+async function addScan(r) {
+  const at = `${E.book}:${E.page}`, box = [r.x, r.y, r.x + r.w, r.y + r.h];
+  E.pending.push(r);
+  renderBoxes();
+  let answer = null;
+  try {
+    answer = await api(`/books/${E.book}/pages/${E.page}/scan`,
+      { method: "POST", body: { box, translate: true, background: around(null) } });
+  } catch (e) { toast(e.message, "error"); }
+  if (at !== `${E.book}:${E.page}`) return;
+  E.pending = E.pending.filter((x) => x !== r);
+  if (answer && !answer.src) toast("No text was read there. Try a closer frame around the text.", "error");
+  if (answer && answer.src) addBlock(r, answer.src, answer.text, box); else renderBoxes();
+}
+
+/* ---------------- keys: all of them stay in the editor while it's open ---------------- */
+
+window.addEventListener("keydown", (e) => {
+  if (!E.root || E.root.hidden) return;
+  e.stopPropagation();  // not the reader's (arrows turn its pages, Escape leaves it)
+  const typing = /^(TEXTAREA|INPUT|SELECT)$/.test(e.target.tagName || "");
+  const ctrl = e.ctrlKey || e.metaKey, key = e.key.toLowerCase();
+  if (e.key === "Escape") {
+    e.preventDefault();
+    if (!q(".mte-ask").hidden) q(".mte-ask").hidden = true;
+    else if (E.tool !== "move") { E.tool = "move"; top(); }
+    else if (typing) e.target.blur();
+    else close();
+  } else if (ctrl && key === "s") {
+    e.preventDefault();
+    if (typing) e.target.blur();  // what is being typed counts
+    save();
+  } else if (ctrl && key === "z" && !typing) {
+    e.preventDefault();
+    undo();
+  } else if (!typing && !ctrl && E.blocks[E.sel]) {
+    const b = E.blocks[E.sel], step = e.shiftKey ? 0.01 : 0.002;
+    const by = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[e.key];
+    if (by) {
+      e.preventDefault();
+      change(() => { b.x = clamp(b.x + by[0], 0, 1 - b.w); b.y = clamp(b.y + by[1], 0, 1 - b.h); });
+      place(boxEl(E.sel), b);
+    } else if (e.key === "Delete" || e.key === "Backspace") {
+      e.preventDefault();
+      cardActions.del(E.sel);
+    }
+  }
+}, true);
+
+/* the reader was left under the editor (the back button): nothing to edit any more */
+window.addEventListener("hashchange", () => {
+  if (!E.root || E.root.hidden || location.hash.startsWith(`#/read/${E.book}`)) return;
+  if (E.dirty) save();
+  E.changed = false;
+  finish();
+});
+})();
+""".replace("__EDIT_LABEL__", EDIT_LABEL)
+
+
+MangaTranslate.css += style_css()
+if HAS_EDITOR:
+    MangaTranslate.css += EDITOR_CSS
+    MangaTranslate.js = EDITOR_JS
+    MangaTranslate.router = make_router()
